@@ -253,20 +253,23 @@ def test_the_rating_rules_and_reviews_only_break_ties(catalog, gender_specific_t
 
     # Category browsing with its default `rating` order starts at this level. It
     # does not run the full gift-recommendation precedence, where `universal` and
-    # the other semantic criteria belong.
+    # the other semantic criteria belong. Check every category so this test does
+    # not pass merely because one shelf happens to have the same first page under
+    # the two different ordering rules.
     import api
 
-    of_the_category = [
-        p for p in catalog.all_products() if p.category == "Kitchen & Dining"
-    ]
-    inside = selection.take_what_qualifies(
-        of_the_category, {}, gender_specific_types, require_standalone_gift=False
-    )
-    ordered = sorted(inside, key=lambda p: (selection._level_six(p), p.product_id))
-    response = asyncio.run(api.get_products_by_category("Kitchen & Dining"))
-    assert [p.product_id for p in response.results] == [
-        p.product_id for p in ordered[:8]
-    ]
+    for category in api.CATEGORIES:
+        of_the_category = [
+            p for p in catalog.all_products() if p.category == category
+        ]
+        inside = selection.take_what_qualifies(
+            of_the_category, {}, gender_specific_types, require_standalone_gift=False
+        )
+        ordered = sorted(inside, key=lambda p: (selection._level_six(p), p.product_id))
+        response = asyncio.run(api.get_products_by_category(category))
+        assert [p.product_id for p in response.results] == [
+            p.product_id for p in ordered[:8]
+        ]
 
 
 def test_buyer_knows_recipient_skips_the_gift_risk_level(catalog):
