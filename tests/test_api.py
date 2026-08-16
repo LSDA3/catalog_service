@@ -766,6 +766,13 @@ def test_related_products_may_be_of_another_type(client_):
     types = {p["product_type"] for p in body["results"]}
     assert types - {"chef_knife"}, "a substitute is very often another object"
 
+    body = with_catalog(
+        client_, "/get_related_products", relation="alternative_to", use_case="cooking"
+    ).json()
+    assert body["results"]
+    assert all("cooking" in p["use_case"] for p in body["results"])
+    assert all(p["relation_type"] == "same_function" for p in body["results"])
+
 
 def test_but_the_search_does_restrict_to_the_exact_type(client_):
     body = with_catalog(client_, "/find_products_by_criteria", product_type="chef_knife").json()
