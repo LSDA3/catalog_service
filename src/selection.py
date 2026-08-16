@@ -102,7 +102,13 @@ def take_what_qualifies(
         if criteria.get("gift_wrap_required") is True and product.gift_wrap is not True:
             continue
         for field in ("brand", "color", "material"):
-            if field in criteria and getattr(product, field) != criteria[field]:
+            if field not in criteria:
+                continue
+            requested = criteria[field]
+            if isinstance(requested, list):
+                if getattr(product, field) not in requested:
+                    break
+            elif getattr(product, field) != requested:
                 break
         else:
             if criteria.get("stocking_filler") is True and not product.stocking_filler:
