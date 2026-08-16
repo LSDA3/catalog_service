@@ -28,6 +28,12 @@ En el ejemplo, `BS-003` es el accesorio y `BS-001` el producto principal: por es
 la arista se escribe bajo `BS-003`, aunque su identificador sea el mayor de los
 dos. Solo se devuelven los productos que llevan alguna relación escrita.
 
+Si una respuesta es rechazada por una regla determinista y recibes el motivo del
+rechazo, **devuelve otra vez el JSON completo**, corregido. Conserva las relaciones
+válidas que ya habías encontrado, corrige únicamente lo inadmisible y vuelve a
+revisar el catálogo entero antes de responder. No devuelvas un parche parcial ni
+una explicación.
+
 ## `pairs_with` — con qué producto hace pareja
 
 Dos productos hacen pareja cuando **uno mejora, completa o permite el uso del
