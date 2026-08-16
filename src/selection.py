@@ -322,14 +322,16 @@ def _alternative_levels(
     upper level is exhausted first and only then is the limit filled.
     """
     if anchor is None:
-        # With no source product, the accumulated intention supplies the same
-        # categories that would otherwise be read from that product. There is no
-        # generic remainder: if neither the requested type nor a functional family
-        # defines a relation level, this function has no related candidates to add.
+        # With no source product, the accumulated intention supplies the categories
+        # that would otherwise be read from that product. A concrete type gives the
+        # same-type and same-family levels; a functional family gives that family.
+        # When neither exists, the accumulated categories are compared over the
+        # catalog by the same boundaries and precedence used below. This is not a
+        # generic remainder after the relation levels: there is no `rest` level.
         requested_type = criteria.get("product_type")
         if not requested_type:
             if not criteria.get("functional_family"):
-                return []
+                return [list(products)]
             same_family = [
                 p
                 for p in products
