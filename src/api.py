@@ -240,8 +240,28 @@ Category = Annotated[
 ]
 Subcategory = Annotated[str | None, Query(description="Catalog subcategory.")]
 Brand = Annotated[str | None, Query(description="Exact brand. It does not admit degree.")]
-Color = Annotated[str | None, Query(description="Exact colour. Blue is not almost blue.")]
-Material = Annotated[str | None, Query(description="Exact material.")]
+Color = Annotated[
+    str | None,
+    Query(
+        description=(
+            "Colour stated by the customer. A broad term defined in the catalog "
+            "vocabulary expands to every catalog colour it covers; otherwise an exact "
+            "catalog value is matched case-insensitively. Keep the customer's precision "
+            "and do not invent a more specific colour.\n" + _definitions_of("color")
+        )
+    ),
+]
+Material = Annotated[
+    str | None,
+    Query(
+        description=(
+            "Material stated by the customer. A broad term defined in the catalog "
+            "vocabulary expands to every catalog material it covers; otherwise an exact "
+            "catalog value is matched case-insensitively. Keep the customer's precision "
+            "and do not invent a more specific material.\n" + _definitions_of("material")
+        )
+    ),
+]
 UseCaseCriterion = Annotated[
     list[UseCase] | None,
     Query(
@@ -558,9 +578,34 @@ async def find_products_by_criteria(
             "stocking_filler": stocking_filler,
         }
     )
+    understood = dict(criteria)
 
     kind_, unresolved = _resolve_product_type(product_type)
     not_applied_ = [unresolved] if unresolved else []
+
+    for field, requested in (("color", color), ("material", material)):
+        if requested is None:
+            continue
+        definition = VOCABULARY.get(field, {}).get(requested.lower())
+        if isinstance(definition, dict) and definition.get("cubre"):
+            criteria[field] = list(definition["cubre"])
+            continue
+        values_ = sorted(
+            {
+                getattr(product, field)
+                for product in catalog.all_products()
+                if getattr(product, field) is not None
+                and getattr(product, field).lower() == requested.lower()
+            }
+        )
+        if values_:
+            criteria[field] = values_
+        else:
+            criteria.pop(field, None)
+            understood.pop(field, None)
+            not_applied_.append(
+                NotApplied(parameter=field, received=requested, reason="unresolved")
+            )
 
     universe = selection.restrict_to_exact_match(catalog.all_products(), kind_)
     inside = selection.take_what_qualifies(universe, criteria, GENDER_SPECIFIC_TYPES)
@@ -583,7 +628,6 @@ async def find_products_by_criteria(
             universe, criteria, GENDER_SPECIFIC_TYPES, QUALITY_BY_PRODUCT
         )
 
-    understood = dict(criteria)
     if kind_:
         understood["product_type"] = kind_
 
@@ -691,6 +735,27 @@ async def get_related_products(
             "buyer_knows_recipient": buyer_knows_recipient,
         }
     )
+    understood = dict(criteria) if anchor is None else None
+
+    for field, requested in (("color", color), ("material", material)):
+        if requested is None:
+            continue
+        definition = VOCABULARY.get(field, {}).get(requested.lower())
+        if isinstance(definition, dict) and definition.get("cubre"):
+            criteria[field] = list(definition["cubre"])
+            continue
+        values_ = sorted(
+            {
+                getattr(product, field)
+                for product in catalog.all_products()
+                if getattr(product, field) is not None
+                and getattr(product, field).lower() == requested.lower()
+            }
+        )
+        if values_:
+            criteria[field] = values_
+        else:
+            return recoverable("invalid_parameter", parameter=field, received=requested)
 
     if relation == "pairs_with" and anchor is None:
         return recoverable("missing_anchor", relation=relation)
@@ -706,6 +771,8 @@ async def get_related_products(
     # another type: that is precisely what a substitute is.
     if anchor is None and kind_:
         criteria["product_type"] = kind_
+        if understood is not None:
+            understood["product_type"] = kind_
     chosen = selection.related_products(
         catalog.all_products(),
         relation,
@@ -779,7 +846,6 @@ async def get_related_products(
                     )
                 )
 
-    understood = dict(criteria) if anchor is None else None
     return GetRelatedProductsResponse(
         results=results_,
         query_understood=understood,
