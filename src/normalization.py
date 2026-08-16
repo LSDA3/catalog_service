@@ -61,8 +61,8 @@ class CanonicalProduct:
     recipient: list[str] = field(default_factory=list)
     occasion: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
-    color: str = ""
-    material: str = ""
+    color: str | None = None
+    material: str | None = None
     gift_wrap: bool | None = None
     shipping_days: int | None = None
     description: str = ""
@@ -206,7 +206,7 @@ def description_quality_of(description: str) -> str:
 
 
 def open_recipient(
-    original: list[str], product_type: str | None, gender_specific_types: set[str]
+    original: list[str], product_type: str | None, gender_specific_types: dict[str, str]
 ) -> list[str]:
     """Add `anyone` to every product that can carry it (A2.2).
 
@@ -224,14 +224,14 @@ def open_recipient(
     return values
 
 
-def gender_specific_product_types(vocabularies_path: Path | str) -> set[str]:
+def gender_specific_product_types(vocabularies_path: Path | str) -> dict[str, str]:
     """The product types the vocabulary marks as exclusive to one gender."""
     vocabulary = yaml.safe_load(Path(vocabularies_path).read_text(encoding="utf-8"))
     types = vocabulary.get("product_type", {})
     return {
-        key
+        key: definition["gender_specific"]
         for key, definition in types.items()
-        if isinstance(definition, dict) and definition.get("gender_specific")
+        if isinstance(definition, dict) and definition.get("gender_specific") in {"male", "female"}
     }
 
 
@@ -313,8 +313,8 @@ def canonicalize(
             recipient=recipient,
             occasion=_list_of(main.get("occasion", "")),
             tags=_list_of(main.get("tags", "")),
-            color=(main.get("color") or "").strip(),
-            material=(main.get("material") or "").strip(),
+            color=(main.get("color") or "").strip() or None,
+            material=(main.get("material") or "").strip() or None,
             gift_wrap=_boolean(main.get("gift_wrap", ""), row_number, "gift_wrap"),
             shipping_days=_integer(main.get("shipping_days", ""), row_number, "shipping_days"),
             description=description,
