@@ -8,6 +8,10 @@ Se recalculan **siempre completas**, nunca de forma incremental: un producto
 nuevo no solo necesita sus relaciones, puede obligar a revisar las de los que ya
 estaban.
 
+**Revisa el catálogo entero antes de devolver la salida.** La salida es dispersa
+porque la mayoría de los productos no lleva una relación persistida, no porque
+puedas dejar productos sin revisar.
+
 ## Qué devuelves
 
 ```json
@@ -26,32 +30,38 @@ dos. Solo se devuelven los productos que llevan alguna relación escrita.
 
 ## `pairs_with` — con qué producto hace pareja
 
-Dos productos hacen pareja cuando **uno mejora o completa el uso del otro**: la
-pluma y el muestrario de tintas, el cuchillo y la piedra de afilar, la cámara
-instantánea y el pack de película.
+Dos productos hacen pareja cuando **uno mejora, completa o permite el uso del
+otro de una forma concreta**: la pluma y el muestrario de tintas, el cuchillo y
+la piedra de afilar, la cámara instantánea y el pack de película.
 
-No es "van bien juntos" en abstracto: tiene que haber una relación de uso real,
-que se pueda leer en las descripciones.
+La evidencia de `pairs_with` es la **relación funcional concreta entre los dos
+objetos**. Puede estar dicha expresamente en la descripción o ser inequívoca por
+lo que son y para qué sirven los productos. Una piedra de afilar puede acompañar
+a un cuchillo aunque la descripción de la piedra no nombre ese cuchillo.
+
+No es "van bien juntos" en abstracto, compartir categoría, compartir familia ni
+ser dos objetos que podrían regalarse juntos. Tiene que existir una relación de
+uso concreta entre ese accesorio o complemento y ese producto principal.
 
 ## `alternative_to` — la relación de sustitución
 
-Dos productos son alternativa cuando **uno puede ocupar el lugar del otro** ante
-la misma necesidad. Cada relación declara su naturaleza:
+Dos productos son alternativa persistida cuando **uno puede ocupar el lugar del
+otro ante la misma necesidad y esa pareja concreta aporta información que el
+servicio no deriva ya por sí mismo**. Cada relación declara su naturaleza:
 
 | `relation_type` | Significa | Cuándo |
 |---|---|---|
 | `equivalent` | Versiones del mismo objeto o concepto comercial | **Solo con evidencia suficiente en el catálogo.** No basta con compartir `product_type`, ni `functional_family`, ni servir para lo mismo |
-| `same_function` | Otro objeto distinto que sustituye a este | **Solo cuando el catálogo sostiene la sustitución**, con una descripción que la enuncie. No "podría servir", no "cubre una necesidad parecida" |
+| `same_function` | Otro objeto distinto que sustituye a este | Cuando el catálogo sostiene esa sustitución concreta, sin evidencia suficiente para afirmar que sean versiones del mismo objeto |
 
 **Ante la duda entre las dos etiquetas, `same_function`.** Pero eso es elegir
 entre dos etiquetas **cuando la relación ya está justificada**. No es una excusa
 para escribir la relación: ante la duda de si la relación existe, **no se
 escribe**.
 
-## Lo que el servicio deriva solo, y por eso no se escribe nunca
+## Lo que el servicio deriva solo, y por eso no se escribe
 
-Esta es la regla que más relaciones descarta, y la que hay que aplicar antes que
-ninguna otra.
+Esta regla se aplica antes de decidir si una `alternative_to` se persiste.
 
 El servicio ya relaciona en ejecución, sin que aquí se escriba nada:
 
@@ -64,30 +74,29 @@ El servicio ya relaciona en ejecución, sin que aquí se escriba nada:
 ni una arista escrita y aun así el servicio lo relaciona con los demás productos
 de `food_preparation`.
 
-Por tanto, **estos no son motivos para escribir una relación**:
+Por tanto:
 
-- que compartan `product_type`
-- que compartan `functional_family`
-- que sirvan para algo parecido
-- que se parezcan, que peguen o que "vayan en la misma línea"
-- completar cobertura, para que ningún producto se quede sin relaciones
+- **dos productos del mismo `product_type` no se escriben en `alternative_to`**:
+  esa sustitución ya la deriva el servicio;
+- compartir `functional_family` **no es motivo suficiente** para escribir una
+  `alternative_to`: la familia da el conjunto de sustitución, no el vecino
+  exacto;
+- que sirvan para algo parecido, se parezcan, peguen o "vayan en la misma línea"
+  tampoco justifica una arista persistida;
+- no se escriben relaciones para completar cobertura.
 
-Escribir una relación por cualquiera de esos motivos **no añade nada**: duplica
-lo que el servicio ya calcula, y encima lo hace peor, porque una relación escrita
-tiene prioridad sobre la derivada y desplaza a un candidato mejor.
+Una frase del catálogo puede describir un vínculo real y aun así no generar una
+arista persistida si el servicio ya obtiene esa relación por `product_type`.
+**Que exista relación y que haya que persistirla son dos preguntas distintas.**
 
-**Lo único que se escribe es el vínculo que el catálogo declara y que ninguna
-categoría deduce**: la piedra que afila *ese* cuchillo, la manta que el catálogo
-describe como la versión de diario de *esa* otra.
-
-**Dos productos del mismo `product_type` no se escriben como `same_function`
-jamás**: esa relación ya la deriva el servicio, con esa misma etiqueta.
+Lo que sí se persiste es el vínculo exacto que añade información que las
+categorías no proporcionan por sí solas: qué producto complementa concretamente
+a cuál, o qué sustituto concreto ha quedado declarado por el catálogo.
 
 **La mayoría de los productos no lleva ninguna relación escrita, y eso es lo
 correcto.** No hay ninguna cifra que alcanzar, ni por arriba ni por abajo: la
-pregunta no es cuántas relaciones han salido, es si el catálogo sostiene cada
-una. Un catálogo entero sin una sola relación escrita sería un resultado válido
-si sus descripciones no declaran ningún vínculo.
+pregunta no es cuántas relaciones han salido, sino si cada una está justificada
+y si realmente necesita persistirse.
 
 ## Cómo se escriben
 
@@ -96,11 +105,10 @@ igual**, porque no significan lo mismo.
 
 - **`pairs_with` se escribe del accesorio hacia el producto principal.** La
   dirección **es** el contenido: la piedra de afilar apunta al cuchillo, no al
-  revés. **No se ordena por `product_id`.** Si el cuchillo es `KD-001` y la
-  piedra es `KD-002`, se escribe bajo `KD-002`.
-- **`alternative_to` se escribe bajo el `product_id` lexicográficamente
-  menor** de la pareja, con su `relation_type`. Esa relación sí es simétrica, así
-  que el identificador menor es solo un lugar donde ponerla.
+  revés. **No se ordena por `product_id`.**
+- **`alternative_to` se escribe bajo el `product_id` lexicográficamente menor**
+  de la pareja, con su `relation_type`. Esa relación sí es simétrica, así que el
+  identificador menor es solo un lugar donde ponerla.
 
 Que el otro extremo conozca la relación es trabajo del loader: duplicarla abre la
 puerta a que los dos lados dejen de coincidir.
