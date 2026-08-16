@@ -568,7 +568,17 @@ async def find_products_by_criteria(
     results_ = ordered[:limit]
 
     excluded_: list[ExcludedProduct] = []
-    if len(results_) < limit:
+    if kind_ and not results_ and len(universe) == 1 and not universe[0].in_stock:
+        product = universe[0]
+        excluded_.append(
+            ExcludedProduct(
+                product_id=product.product_id,
+                name=product.name,
+                price=product.price,
+                exclusion_reason="out_of_stock",
+            )
+        )
+    elif len(results_) < limit:
         excluded_ = selection.above_budget(
             universe, criteria, GENDER_SPECIFIC_TYPES, QUALITY_BY_PRODUCT
         )
