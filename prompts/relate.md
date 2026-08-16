@@ -112,9 +112,6 @@ Ejemplos resueltos del propio catálogo:
 - *"Same glaze as the medium planter"* **no** sostiene `equivalent`: comparte un
   acabado, no declara que el macetero colgante sea otra versión del objeto
   completo. Si se conserva como alternativa, su etiqueta es `same_function`.
-- *"The answer to the risk above"* sostiene `same_function`: el set de muestras
-  permite regalar fragancia evitando el riesgo del perfume completo, pero no es
-  otra versión del mismo objeto.
 
 **Ante la duda entre las dos etiquetas, `same_function`.** Pero eso es elegir
 entre dos etiquetas **cuando la relación ya está justificada**. No es una excusa
