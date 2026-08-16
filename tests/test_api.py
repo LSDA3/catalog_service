@@ -161,7 +161,6 @@ def test_the_navigation_carries_total_and_offset(client_):
     body = with_catalog(
         client_, "/get_products_by_category", category="Kitchen & Dining"
     ).json()
-    # 22 in the category, 2 out of stock: browsing does not require `is_standalone_gift`.
     assert body["total"] == 20
     assert body["offset"] == 0
     assert len(body["results"]) <= 8
@@ -257,7 +256,7 @@ def test_a_limit_out_of_range_is_invalid_parameter(client_):
     assert response.json() == {
         "error_type": "invalid_parameter",
         "parameter": "limit",
-        "received": 20,
+        "received": "20",
     }
 
 
@@ -314,6 +313,23 @@ def test_related_products_declare_their_relation_type(client_):
     ).json()
     assert body["results"]
     assert body["results"][0]["relation_type"] in ("equivalent", "same_function")
+    assert "excluded" not in body
+
+    body = with_catalog(
+        client_,
+        "/get_related_products",
+        relation="alternative_to",
+        product_id="HL-009",
+        max_price=100,
+        limit=5,
+    ).json()
+    assert "HL-010" in {product["product_id"] for product in body["results"]}
+    assert body["excluded"]
+    assert len(body["excluded"]) <= 2
+    assert all(product["exclusion_reason"] == "over_budget" for product in body["excluded"])
+    assert all(product["price"] > 100 for product in body["excluded"])
+    assert all(product["actual"] == product["price"] for product in body["excluded"])
+    assert all(product["required"] == 100 for product in body["excluded"])
 
 
 def test_the_complement_arrives_though_not_a_gift_on_its_own(client_):
@@ -404,7 +420,6 @@ def _by_name(specification, operation_id) -> dict:
 
 
 def _parametros(specification, operation_id) -> set[str]:
-    """The business and control parameters that travel in the query."""
     return {
         name
         for name, parameter in _by_name(specification, operation_id).items()
@@ -475,9 +490,20 @@ def test_the_five_operations_use_security_not_a_credential_parameter(client_):
 
 
 def test_relation_is_the_only_required_related_parameter(client_):
-    parameters = _by_name(client_.get("/openapi.json").json(), "get_related_products")
+    specification = client_.get("/openapi.json").json()
+    parameters = _by_name(specification, "get_related_products")
     required = {name for name, parameter in parameters.items() if parameter.get("required")}
     assert required == {"relation"}
+
+    navigation = _by_name(specification, "get_products_by_category")
+    search = _by_name(specification, "find_products_by_criteria")
+    assert navigation["limit"]["schema"]["minimum"] == 1
+    assert navigation["limit"]["schema"]["maximum"] == 8
+    assert navigation["offset"]["schema"]["minimum"] == 0
+    assert search["limit"]["schema"]["minimum"] == 1
+    assert search["limit"]["schema"]["maximum"] == 8
+    assert parameters["limit"]["schema"]["minimum"] == 1
+    assert parameters["limit"]["schema"]["maximum"] == 5
 
 
 def test_product_type_is_not_an_enum(client_):
