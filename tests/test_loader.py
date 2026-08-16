@@ -14,9 +14,12 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT / "scripts"))
 
+import enrich  # noqa: E402
 import loader  # noqa: E402
 import models  # noqa: E402
+import validate_semantic  # noqa: E402
 
 CSV = ROOT / "data" / "catalog.csv"
 VOCABULARIES = ROOT / "data" / "vocabularies.yaml"
@@ -86,6 +89,9 @@ def test_no_product_is_left_unclassified(loaded):
         assert product.functional_family
         assert product.use_case
         assert product.gift_risk
+        assert product.suitable_relationships
+        assert isinstance(product.is_standalone_gift, bool)
+        assert isinstance(product.stocking_filler, bool)
 
 
 def test_no_value_falls_outside_the_vocabulary(loaded):
@@ -93,12 +99,29 @@ def test_no_value_falls_outside_the_vocabulary(loaded):
 
     products, _, _ = loaded
     vocabulary = yaml.safe_load(VOCABULARIES.read_text(encoding="utf-8"))
-    for field in ("product_type", "functional_family", "use_case", "gift_risk"):
+    for field in (
+        "product_type",
+        "functional_family",
+        "use_case",
+        "gift_risk",
+        "suitable_relationships",
+    ):
         allowed = set(vocabulary[field])
         for product in products:
             value_ = getattr(product, field)
             values_ = value_ if isinstance(value_, list) else [value_]
             assert set(values_) <= allowed, (product.product_id, field, values_)
+
+    layer = json.loads(SEMANTIC_LAYER.read_text(encoding="utf-8"))
+    entries = layer["products"] if isinstance(layer, dict) and "products" in layer else layer
+    own = dict(next(iter(entries.values())))
+    complaints = enrich.problems_with(
+        own,
+        {"key": "unused_type", "definicion": "Unused proposal", "aliases": []},
+        vocabulary,
+    )
+    assert any("new_product_type.key" in complaint for complaint in complaints)
+    assert any("must not be returned" in complaint for complaint in complaints)
 
 
 # --------------------------------------------------------------------------
@@ -109,6 +132,8 @@ def test_no_value_falls_outside_the_vocabulary(loaded):
 def test_product_has_exactly_26_fields():
     assert len(models.Product.model_fields) == 26
     assert tuple(models.Product.model_fields) == models.PRODUCT_FIELDS
+    assert models.Product.model_fields["color"].annotation == str | None
+    assert models.Product.model_fields["material"].annotation == str | None
 
 
 @pytest.mark.parametrize("field", ["description_quality", "tags", "stock", "alt_product_ids"])
@@ -235,3 +260,57 @@ def test_an_incomplete_semantic_layer_stops_the_start_up(tmp_path):
 
     with pytest.raises(loader.IncompleteSemanticLayer):
         loader.load(CSV, VOCABULARIES, trimmed)
+
+    layer = json.loads(SEMANTIC_LAYER.read_text(encoding="utf-8"))
+    entries = layer["products"] if isinstance(layer, dict) and "products" in layer else layer
+    product_id = next(iter(entries))
+    entries[product_id].pop("gift_risk")
+    trimmed.write_text(json.dumps(layer), encoding="utf-8")
+    failures = validate_semantic.validate(CSV, trimmed, VOCABULARIES)
+    assert any("missing gift_risk" in failure for failure in failures)
+
+    layer = json.loads(SEMANTIC_LAYER.read_text(encoding="utf-8"))
+    entries = layer["products"] if isinstance(layer, dict) and "products" in layer else layer
+    product_id = next(iter(entries))
+    entries[product_id]["suitable_relationships"] = []
+    trimmed.write_text(json.dumps(layer), encoding="utf-8")
+    failures = validate_semantic.validate(CSV, trimmed, VOCABULARIES)
+    assert any("empty suitable_relationships" in failure for failure in failures)
+
+    layer = json.loads(SEMANTIC_LAYER.read_text(encoding="utf-8"))
+    entries = layer["products"] if isinstance(layer, dict) and "products" in layer else layer
+    product_id = next(iter(entries))
+    entries[product_id]["stocking_filler"] = "false"
+    trimmed.write_text(json.dumps(layer), encoding="utf-8")
+    failures = validate_semantic.validate(CSV, trimmed, VOCABULARIES)
+    assert any("stocking_filler is not boolean" in failure for failure in failures)
+
+    import yaml
+
+    vocabulary = yaml.safe_load(VOCABULARIES.read_text(encoding="utf-8"))
+    vocabulary["product_type"]["unused_type"] = {
+        "definicion": "Unused proposal",
+        "aliases": [],
+    }
+    layer = json.loads(SEMANTIC_LAYER.read_text(encoding="utf-8"))
+    entries = layer["products"] if isinstance(layer, dict) and "products" in layer else layer
+    failures = validate_semantic._growth_is_justified(
+        vocabulary,
+        set(entries),
+        {entry.get("product_type") for entry in entries.values()},
+    )
+    assert any("registered but not used" in failure for failure in failures)
+
+    products, _, _ = loaded = loader.load(CSV, VOCABULARIES, SEMANTIC_LAYER)
+    by_type: dict[str, list[str]] = {}
+    for product in products:
+        by_type.setdefault(product.product_type, []).append(product.product_id)
+    same_type = next(sorted(ids) for ids in by_type.values() if len(ids) > 1)
+    layer = json.loads(SEMANTIC_LAYER.read_text(encoding="utf-8"))
+    entries = layer["products"] if isinstance(layer, dict) and "products" in layer else layer
+    entries[same_type[0]].setdefault("alternative_to", []).append(
+        {"product_id": same_type[1], "relation_type": "same_function"}
+    )
+    trimmed.write_text(json.dumps(layer), encoding="utf-8")
+    failures = validate_semantic.validate(CSV, trimmed, VOCABULARIES)
+    assert any("already derived from shared product_type" in failure for failure in failures)
