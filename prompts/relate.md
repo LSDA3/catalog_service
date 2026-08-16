@@ -71,22 +71,25 @@ Ejemplos resueltos del propio catálogo:
 
 ## `alternative_to` — la relación de sustitución
 
-Antes de interpretar ninguna frase de las descripciones, haz esta comprobación:
+Primero distingue lo que el servicio ya deriva de lo que una relación explícita
+puede añadir.
 
-**si los dos productos tienen el mismo `product_type`, NO devuelvas
-`alternative_to` entre ellos, con ninguna etiqueta.**
+Si dos productos comparten `product_type`, el servicio ya los relaciona en
+runtime como **`same_function`**. Por tanto, **no persistas entre ellos una
+`alternative_to` con `relation_type: same_function`**: sería repetir exactamente
+la misma información.
 
-Esta regla tiene prioridad absoluta sobre el texto. Expresiones como "sibling",
-"version", "lighter", "easier", "harder" o cualquier otra formulación que
-relacione dos productos **no anulan la regla**: si comparten `product_type`, el
-servicio ya los relaciona en ejecución y esa arista no se persiste.
+Eso **no prohíbe** una relación explícita `equivalent` entre productos del mismo
+`product_type` cuando el catálogo aporta evidencia suficiente de que son
+versiones del mismo objeto o concepto comercial. Runtime no puede deducir esa
+naturaleza fuerte: por `product_type` solo obtendría `same_function`.
 
-Solo después de superar esa comprobación decides si existe una relación
-persistida. Dos productos son alternativa persistida cuando **cada uno puede
-realizar por sí mismo el papel principal por el que se compraría el otro**. Si
-uno prepara, mantiene, repone, protege o permite usar al otro pero **no realiza
-su función principal**, son complementarios y no son `alternative_to` por ese
-motivo.
+Dos productos son alternativa persistida cuando **cada uno puede realizar por sí
+mismo el papel principal por el que se compraría el otro** y la arista explícita
+aporta información concreta que la pertenencia a las categorías no expresa por
+sí sola. Si uno prepara, mantiene, repone, protege o permite usar al otro pero
+**no realiza su función principal**, son complementarios y no son
+`alternative_to` por ese motivo.
 
 La decisión es sobre la **misma compra concreta**, no solo sobre pertenecer a una
 familia funcional amplia. `subcategory`, `brand`, `tags`, nombre,
@@ -97,7 +100,7 @@ Cada relación declara su naturaleza:
 
 | `relation_type` | Significa | Cuándo |
 |---|---|---|
-| `equivalent` | Versiones del mismo objeto o concepto comercial | **Solo cuando el catálogo sostiene que el objeto completo es otra versión del otro.** Compartir acabado, material, color, diseño, marca, subcategoría, tags o familia no basta |
+| `equivalent` | Versiones del mismo objeto o concepto comercial | **Solo cuando el catálogo sostiene que el objeto completo es otra versión del otro.** Compartir acabado, material, color, diseño, marca, subcategoría, tags, `product_type` o familia no basta |
 | `same_function` | Otro objeto distinto que sustituye a este | Cuando ambos realizan por sí mismos la función principal de la misma compra concreta, pero no hay evidencia suficiente para afirmar que el objeto completo sea otra versión del otro |
 
 Una frase como "same glaze", "same finish" o "same material" habla de una
@@ -122,41 +125,40 @@ escribe**.
 
 El servicio ya relaciona en ejecución, sin que aquí se escriba nada:
 
-| Lo que el servicio deriva solo | Alcance |
+| Lo que el servicio deriva solo | Qué sabe runtime |
 |---|---|
-| Productos que comparten `product_type` | Los 150 |
-| Productos que comparten `functional_family` | Los 150 |
+| Productos que comparten `product_type` | Existe una sustitución derivada y su `relation_type` es `same_function` |
+| Productos que comparten `functional_family` | Existe una sustitución derivada de nivel inferior y su `relation_type` es `same_function` |
 
-**Todo producto tiene ya relaciones por esas dos vías.** El kit de pan no tiene
-ni una arista escrita y aun así el servicio lo relaciona con los demás productos
-de `food_preparation`.
+**Todo producto tiene ya relaciones por esas vías.** El kit de pan no tiene ni
+una arista escrita y aun así el servicio lo relaciona con los demás productos de
+`food_preparation`.
 
 Por tanto:
 
-- **dos productos del mismo `product_type` no se escriben en `alternative_to`**,
-  aunque una descripción los relacione explícitamente;
+- compartir `product_type` impide persistir **esa misma relación como
+  `same_function`**, pero no una `equivalent` realmente demostrada por el
+  catálogo, porque esa etiqueta añade una información que runtime no puede
+  inferir;
 - compartir `functional_family` **no es motivo suficiente** para escribir una
   `alternative_to`: la familia da el conjunto de sustitución, mientras que una
-  arista persistida identifica un vecino concreto dentro o fuera de ese conjunto;
+  arista explícita puede identificar un vecino concreto especialmente cercano;
 - compartir marca, `subcategory` o tags ayuda a reconocer ese vecino concreto,
   pero tampoco lo crea automáticamente;
 - que sirvan para algo parecido, se parezcan, peguen o "vayan en la misma línea"
   tampoco justifica por sí solo una arista persistida;
 - no se escriben relaciones para completar cobertura.
 
-Una frase del catálogo puede describir un vínculo real y aun así no generar una
-arista persistida si el servicio ya obtiene exactamente esa sustitución por
-`product_type`. **Que exista relación y que haya que persistirla son dos preguntas
-distintas.**
-
-Lo que sí se persiste es el vínculo exacto que añade información que las
-categorías amplias no proporcionan por sí solas: qué producto complementa
-concretamente a cuál, o cuál es el sustituto concreto especialmente cercano.
+**Que runtime pueda relacionar dos productos y que exista una arista explícita
+útil son preguntas distintas.** La arista solo se persiste cuando añade una
+información concreta que la relación derivada no conserva: una naturaleza
+`equivalent` demostrada o un vecino exacto especialmente sostenido por el
+catálogo.
 
 **La mayoría de los productos no lleva ninguna relación escrita, y eso es lo
 correcto.** No hay ninguna cifra que alcanzar, ni por arriba ni por abajo: la
 pregunta no es cuántas relaciones han salido, sino si cada una está justificada
-y si realmente necesita persistirse.
+y si realmente aporta información explícita.
 
 ## Cómo se escriben
 
