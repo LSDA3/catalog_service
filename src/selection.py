@@ -107,13 +107,15 @@ def take_what_qualifies(
         else:
             if criteria.get("stocking_filler") is True and not product.stocking_filler:
                 continue
-            if criteria.get("recipient") == "kids" and "kids" not in product.recipient:
+            requested = criteria.get("recipient")
+            if requested == "kids" and "kids" not in product.recipient:
                 continue
-            if "gender_specific" in criteria:
-                requested = criteria["gender_specific"]
-                if product.product_type in gender_specific_types:
-                    if requested not in product.recipient:
-                        continue
+            if (
+                requested in {"her", "him", "couple"}
+                and product.product_type in gender_specific_types
+                and requested not in product.recipient
+            ):
+                continue
             inside.append(product)
 
     return inside
@@ -201,7 +203,16 @@ def precedence_key(
     level_3 = -shelf_matches
 
     requested_recipient = criteria.get("recipient")
-    level_4 = 0 if (requested_recipient and requested_recipient in product.recipient) else 1
+    if requested_recipient == "kids":
+        level_4 = 0 if "kids" in product.recipient else 1
+    elif requested_recipient:
+        level_4 = (
+            0
+            if requested_recipient in product.recipient or "anyone" in product.recipient
+            else 1
+        )
+    else:
+        level_4 = 1
 
     requested_relationship = criteria.get("relationship")
     level_5 = (
@@ -311,13 +322,20 @@ def _alternative_levels(
     upper level is exhausted first and only then is the limit filled.
     """
     if anchor is None:
-        # With no source product, what defines the alternative is the accumulated
-        # intention: a single level, the one of the semantic criteria. The requested
-        # `product_type` describes **the object to be substituted**, so it does not
-        # restrict the answer — a substitute is very often another type (v34 → v35).
+        # With no source product, the accumulated intention supplies the same
+        # categories that would otherwise be read from that product. There is no
+        # generic remainder: if neither the requested type nor a functional family
+        # defines a relation level, this function has no related candidates to add.
         requested_type = criteria.get("product_type")
         if not requested_type:
-            return [list(products)]
+            if not criteria.get("functional_family"):
+                return []
+            same_family = [
+                p
+                for p in products
+                if _matches(p.functional_family, criteria.get("functional_family"))
+            ]
+            return [same_family]
         same_type = [p for p in products if p.product_type == requested_type]
         family = {
             value
@@ -329,12 +347,7 @@ def _alternative_levels(
             for p in products
             if p.product_type != requested_type and set(p.functional_family) & family
         ]
-        rest = [
-            p
-            for p in products
-            if p.product_type != requested_type and not (set(p.functional_family) & family)
-        ]
-        return [same_type, same_family, rest]
+        return [same_type, same_family]
 
     explicit = [p for p in products if p.product_id in anchor.alternative_to]
     already_seen = {p.product_id for p in explicit} | {anchor.product_id}
