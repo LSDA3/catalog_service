@@ -81,8 +81,8 @@ class Product(BaseModel):
     shipping_days: int | None
     gift_wrap: bool | None
     brand: str
-    color: str
-    material: str
+    color: str | None
+    material: str | None
     in_stock: bool = Field(
         description=(
             "Real availability. Discovery and browsing never return unavailable "
