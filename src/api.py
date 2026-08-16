@@ -434,8 +434,8 @@ async def get_products_by_category(
             )
         ),
     ] = "rating",
-    limit: Annotated[int, Query(description="Products per page, 1 to 8.")] = 8,
-    offset: Annotated[int, Query(description="Where the page starts within `total`.")] = 0,
+    limit: Annotated[int, Query(ge=1, le=8, description="Products per page, 1 to 8.")] = 8,
+    offset: Annotated[int, Query(ge=0, description="Where the page starts within `total`.")] = 0,
 ) -> Any:
     minimum, maximum, _ = LIMITS_BY_OPERATION["get_products_by_category"]
     if not (minimum <= limit <= maximum):
@@ -525,7 +525,7 @@ async def find_products_by_criteria(
             )
         ),
     ] = None,
-    limit: Annotated[int, Query(description="Products to return, 1 to 8.")] = 8,
+    limit: Annotated[int, Query(ge=1, le=8, description="Products to return, 1 to 8.")] = 8,
 ) -> Any:
     minimum, maximum, _ = LIMITS_BY_OPERATION["find_products_by_criteria"]
     if not (minimum <= limit <= maximum):
@@ -649,7 +649,7 @@ async def get_related_products(
     min_price: MinPrice = None,
     target_price: TargetPrice = None,
     buyer_knows_recipient: BuyerKnowsRecipient = None,
-    limit: Annotated[int, Query(description="Products to return, 1 to 5.")] = 3,
+    limit: Annotated[int, Query(ge=1, le=5, description="Products to return, 1 to 5.")] = 3,
 ) -> Any:
     minimum, maximum, _ = LIMITS_BY_OPERATION["get_related_products"]
     if not (minimum <= limit <= maximum):
@@ -718,8 +718,63 @@ async def get_related_products(
             kind = explicit or "same_function"
         results_.append(RelatedProduct(**vars(product), relation_type=kind))
 
+    excluded_: list[ExcludedProduct] = []
+    if max_price is not None:
+        without_price = {key_: value_ for key_, value_ in criteria.items() if key_ != "max_price"}
+        if relation == "pairs_with":
+            levels = [
+                [
+                    product
+                    for product in catalog.all_products()
+                    if anchor is not None and product.product_id in anchor.pairs_with
+                ]
+            ]
+        else:
+            levels = selection._alternative_levels(anchor, catalog.all_products(), criteria)
+
+        for level in levels:
+            if len(excluded_) >= selection.EXCLUDED_CAP:
+                break
+            candidates = [
+                product
+                for product in level
+                if anchor is None or product.product_id != anchor.product_id
+            ]
+            inside = selection.take_what_qualifies(
+                candidates,
+                without_price,
+                GENDER_SPECIFIC_TYPES,
+                require_standalone_gift=relation != "pairs_with",
+            )
+            ordered = selection.order_by_precedence(
+                [
+                    product
+                    for product in inside
+                    if product.price is not None and product.price > max_price
+                ],
+                criteria,
+                QUALITY_BY_PRODUCT,
+            )
+            for product in ordered:
+                if len(excluded_) >= selection.EXCLUDED_CAP:
+                    break
+                excluded_.append(
+                    ExcludedProduct(
+                        product_id=product.product_id,
+                        name=product.name,
+                        price=product.price,
+                        exclusion_reason="over_budget",
+                        actual=product.price,
+                        required=max_price,
+                    )
+                )
+
     understood = dict(criteria) if anchor is None else None
-    return GetRelatedProductsResponse(results=results_, query_understood=understood)
+    return GetRelatedProductsResponse(
+        results=results_,
+        query_understood=understood,
+        excluded=excluded_ or None,
+    )
 
 
 @app.get(
