@@ -487,7 +487,12 @@
       "is_standalone_gift": true,
       "stocking_filler": false,
       "pairs_with": [],
-      "alternative_to": []
+      "alternative_to": [
+        {
+          "product_id": "BW-008",
+          "relation_type": "same_function"
+        }
+      ]
     },
     "BW-008": {
       "product_type": "shaving_soap_set",
@@ -542,7 +547,9 @@
       ],
       "is_standalone_gift": true,
       "stocking_filler": false,
-      "pairs_with": [],
+      "pairs_with": [
+        "BW-009"
+      ],
       "alternative_to": []
     },
     "BW-011": {
