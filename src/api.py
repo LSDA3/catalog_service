@@ -28,15 +28,17 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import yaml
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.security import APIKeyHeader
 
 import normalization
 import selection
 from models import (
     LIMITS_BY_OPERATION,
     TechnicalFailure,
+    RecoverableError,
     FunctionalFamily,
     SuitableRelationship,
     UseCase,
@@ -112,30 +114,42 @@ def _within_rate_limit(capability: str) -> bool:
     return True
 
 
-def _reject(code_: int, error_code: str, detail_: str) -> HTTPException:
+def _reject(code_: int, error_code: str, retryable: bool) -> HTTPException:
     return HTTPException(
         status_code=code_,
-        detail={"error_code": error_code, "detail": detail_, "incident_id": uuid.uuid4().hex},
+        detail={
+            "error_code": error_code,
+            "incident_id": uuid.uuid4().hex,
+            "retryable": retryable,
+        },
     )
 
 
 def _check(key_: str | None, expected: str) -> str:
     capability = _capability(key_)
     if capability is None:
-        raise _reject(401, "unauthorized", "missing or unknown credential")
+        raise _reject(401, "unauthorized", False)
     if capability != expected:
-        raise _reject(403, "forbidden", "this credential cannot use this operation")
+        raise _reject(403, "forbidden", False)
     if not _within_rate_limit(capability):
-        raise _reject(429, "rate_limited", "too many requests for this credential")
+        raise _reject(429, "rate_limited", True)
     return capability
 
 
-async def catalog_credential(x_api_key: str | None = Header(default=None)) -> str:
+async def catalog_credential(
+    x_api_key: str | None = Depends(
+        APIKeyHeader(name=HEADER_NAME, scheme_name="CatalogApiKey", auto_error=False)
+    ),
+) -> str:
     """The five catalog operations. This is the one indigo.ai uses."""
     return _check(x_api_key, "catalog")
 
 
-async def diagnostics_credential(x_api_key: str | None = Header(default=None)) -> str:
+async def diagnostics_credential(
+    x_api_key: str | None = Depends(
+        APIKeyHeader(name=HEADER_NAME, scheme_name="CatalogApiKey", auto_error=False)
+    ),
+) -> str:
     """The operator of the service, and nobody else."""
     return _check(x_api_key, "diagnostics")
 
@@ -146,12 +160,7 @@ async def diagnostics_credential(x_api_key: str | None = Header(default=None)) -
 
 
 def recoverable(error_type: str, **extra: Any) -> JSONResponse:
-    """A foreseen request that cannot be executed. It is content, not transport.
-
-    It is returned as a `Response`, so it does not go through `response_model`:
-    the specification describes the shape of success, and `error_type` is
-    described in the description of every operation.
-    """
+    """A foreseen request that cannot be executed. It is content, not transport."""
     body = {"error_type": error_type}
     body.update({key_: value_ for key_, value_ in extra.items() if value_ is not None})
     return JSONResponse(status_code=200, content=body)
@@ -182,11 +191,10 @@ OCCASIONS = sorted({value_ for p in catalog.all_products() for value_ in p.occas
 # `product_type` has NO `enum`: it is the only vocabulary that grows with the
 # inventory, and in the contract it travels as free text resolved by aliases.
 PRODUCT_TYPE_DESCRIPTION = (
-    "The concrete object the customer asked for, as free text. Resolved against a "
-    "controlled but growing vocabulary of product types and their aliases: `gyuto` "
-    "resolves to `chef_knife`. When it resolves, only products of exactly that type "
-    "are returned. When it does not resolve, it is reported in `not_applied` and "
-    "must not be claimed as satisfied. Never send it to narrow a vague intention."
+    "Concrete type of object explicitly or unambiguously requested by the customer, "
+    "as free text. The service resolves canonical product types and known aliases "
+    "deterministically. Do not guess a product type from a broader function, activity "
+    "or category: send it only when the customer named the object."
 )
 
 
@@ -223,7 +231,8 @@ TargetPrice = Annotated[
     Query(description="Approximate price. It opens a band of ±20 % around it."),
 ]
 MaxShippingDays = Annotated[
-    int | None, Query(description="Maximum acceptable delivery time, in days.")
+    int | None,
+    Query(ge=0, description="Maximum acceptable delivery time, in days."),
 ]
 ProductType = Annotated[str | None, Query(description=PRODUCT_TYPE_DESCRIPTION)]
 Category = Annotated[
@@ -260,9 +269,10 @@ Recipient = Annotated[
     Literal["her", "him", "couple", "kids"] | None,
     Query(
         description=(
-            "Who receives the gift. Only `kids` narrows the results: adult products "
-            "match any adult recipient, because the catalog marks gender by commercial "
-            "habit and not by a property of the object."
+            "Who receives the gift. `kids` is a hard boundary and never matches "
+            "`anyone`. For `her`, `him` and `couple`, `anyone` matches at the recipient "
+            "precedence level; only a product type explicitly marked `gender_specific` "
+            "can exclude an incompatible adult recipient."
         )
     ),
 ]
@@ -311,6 +321,30 @@ app = FastAPI(
     ),
 )
 
+app.add_exception_handler(
+    HTTPException,
+    lambda request, error: JSONResponse(
+        status_code=error.status_code,
+        content=(
+            error.detail
+            if isinstance(error.detail, dict) and "error_code" in error.detail
+            else {"detail": error.detail}
+        ),
+        headers=error.headers,
+    ),
+)
+app.add_exception_handler(
+    Exception,
+    lambda request, error: JSONResponse(
+        status_code=503,
+        content={
+            "error_code": "service_unavailable",
+            "incident_id": uuid.uuid4().hex,
+            "retryable": False,
+        },
+    ),
+)
+
 
 # --------------------------------------------------------------------------
 # B5.3 · foreseeable validation errors are not transport failures
@@ -319,21 +353,13 @@ app = FastAPI(
 
 @app.exception_handler(RequestValidationError)
 async def _validation_becomes_recoverable(request: Request, error: RequestValidationError):
-    """Turn the automatic validation of FastAPI into the recoverable contract.
-
-    A value outside an `enum`, a malformed integer or a limit out of range are
-    **foreseeable problems of the request**, and the agent has to read them to
-    correct the next call. Left alone, FastAPI answers 422, which the agent reads
-    as a transport failure and treats as "the catalog is down" — the opposite of
-    what it should do. So they travel as **200 with `error_type`**, like every
-    other recoverable error (B5.3).
-    """
+    """Turn the automatic validation of FastAPI into the recoverable contract."""
     first = error.errors()[0] if error.errors() else {}
     location = [part for part in first.get("loc", []) if part not in ("query", "path", "body")]
     return recoverable(
         "invalid_parameter",
         parameter=str(location[0]) if location else None,
-        detail=first.get("msg", "the request does not satisfy the declared contract"),
+        received=first.get("input"),
     )
 
 
@@ -413,11 +439,11 @@ async def get_products_by_category(
 ) -> Any:
     minimum, maximum, _ = LIMITS_BY_OPERATION["get_products_by_category"]
     if not (minimum <= limit <= maximum):
-        return recoverable("invalid_parameter", parameter="limit")
+        return recoverable("invalid_parameter", parameter="limit", received=limit)
     if offset < 0:
-        return recoverable("invalid_parameter", parameter="offset")
+        return recoverable("invalid_parameter", parameter="offset", received=offset)
     if category not in CATEGORIES:
-        return recoverable("invalid_parameter", parameter="category")
+        return recoverable("invalid_parameter", parameter="category", received=category)
 
     criteria = _without_nulls(
         {
@@ -463,9 +489,13 @@ async def get_products_by_category(
         "to least decisive. Use when the customer describes what they want rather than "
         "browsing one named category. Not every criterion needs to be known. Results "
         "are ordered from most to least relevant; no numeric product score exists. "
-        "Products in `excluded` do not satisfy the query and must never be presented "
-        "as valid results. Criteria listed in `not_applied` were not applied and must "
-        "not be claimed as satisfied."
+        "When `product_type` resolves in this search, results are exact matches for "
+        "that product type; other product types are never returned as if they satisfied "
+        "the exact request. If the value cannot be resolved it is returned in "
+        "`not_applied`, and the remaining valid criteria are still applied. Products "
+        "in `excluded` do not satisfy the query and must never be presented as valid "
+        "results. Criteria listed in `not_applied` were not applied and must not be "
+        "claimed as satisfied."
     ),
 )
 async def find_products_by_criteria(
@@ -499,9 +529,13 @@ async def find_products_by_criteria(
 ) -> Any:
     minimum, maximum, _ = LIMITS_BY_OPERATION["find_products_by_criteria"]
     if not (minimum <= limit <= maximum):
-        return recoverable("invalid_parameter", parameter="limit")
+        return recoverable("invalid_parameter", parameter="limit", received=limit)
     if max_price is not None and min_price is not None and min_price > max_price:
-        return recoverable("conflicting_parameters", parameter="min_price")
+        return recoverable(
+            "conflicting_parameters",
+            parameter=["min_price", "max_price"],
+            received={"min_price": min_price, "max_price": max_price},
+        )
 
     criteria = _without_nulls(
         {
@@ -581,14 +615,14 @@ async def find_products_by_criteria(
 )
 async def get_related_products(
     relation: Annotated[
-        Literal["alternative_to", "pairs_with"] | None,
+        Literal["alternative_to", "pairs_with"],
         Query(
             description=(
                 "Which relation to walk. It is the only required parameter: without it "
                 "the operation has no meaning."
             )
         ),
-    ] = None,
+    ],
     product_id: Annotated[
         str | None,
         Query(
@@ -617,12 +651,9 @@ async def get_related_products(
     buyer_knows_recipient: BuyerKnowsRecipient = None,
     limit: Annotated[int, Query(description="Products to return, 1 to 5.")] = 3,
 ) -> Any:
-    if relation is None:
-        return recoverable("invalid_parameter", parameter="relation")
-
     minimum, maximum, _ = LIMITS_BY_OPERATION["get_related_products"]
     if not (minimum <= limit <= maximum):
-        return recoverable("invalid_parameter", parameter="limit")
+        return recoverable("invalid_parameter", parameter="limit", received=limit)
 
     anchor = catalog.by_id(product_id) if product_id else None
     if product_id and anchor is None:
@@ -754,14 +785,7 @@ _specification: dict | None = None
 
 
 def openapi_specification() -> dict:
-    """Publish the specification with the security scheme declared.
-
-    Closed vocabularies already travel in the `enum` values and in the
-    description of each parameter, which is where the model reads them.
-    **`product_type` carries no `enum` on purpose**: it is the only vocabulary
-    that grows with the inventory, and in the contract it is free text resolved
-    by aliases.
-    """
+    """Publish exactly the contract indigo.ai imports."""
     global _specification
     if _specification is not None:
         return _specification
@@ -772,17 +796,30 @@ def openapi_specification() -> dict:
         title=app.title, version=app.version, description=app.description, routes=app.routes
     )
     components = specification.setdefault("components", {})
-    components["securitySchemes"] = {
-        "CatalogApiKey": {"type": "apiKey", "in": "header", "name": HEADER_NAME}
-    }
-    specification["security"] = [{"CatalogApiKey": []}]
-    # 422 does not exist in this contract: FastAPI declares it by default, but
-    # every foreseeable validation error travels as 200 with `error_type` (B5.3).
+    components.setdefault("schemas", {})["RecoverableError"] = RecoverableError.model_json_schema(
+        ref_template="#/components/schemas/{model}"
+    )
+
+    # 422 does not exist in this contract: every foreseeable validation error
+    # travels as HTTP 200 with `error_type` (B5.3). Operations that can produce
+    # such a response publish both shapes under the same 200 status.
     for path_ in specification.get("paths", {}).values():
         for method_ in path_.values():
             method_.get("responses", {}).pop("422", None)
-    specification.get("components", {}).get("schemas", {}).pop("HTTPValidationError", None)
-    specification.get("components", {}).get("schemas", {}).pop("ValidationError", None)
+            if method_.get("operationId") in {
+                "get_products_by_category",
+                "find_products_by_criteria",
+                "get_related_products",
+                "get_product_details",
+            }:
+                method_["responses"]["200"]["content"]["application/json"]["schema"] = {
+                    "oneOf": [
+                        method_["responses"]["200"]["content"]["application/json"]["schema"],
+                        {"$ref": "#/components/schemas/RecoverableError"},
+                    ]
+                }
+    components.get("schemas", {}).pop("HTTPValidationError", None)
+    components.get("schemas", {}).pop("ValidationError", None)
 
     _specification = specification
     return specification
