@@ -125,6 +125,12 @@ def test_the_ten_exclusive_ones_are_the_written_ones(catalog):
         "KI-005",
         "KI-006",
     ]
+    assert n.gender_specific_product_types(VOCABULARIES) == {
+        "beard_care_kit": "male",
+        "earring_set": "female",
+        "earrings": "female",
+        "face_serum": "female",
+    }
 
 
 def test_the_original_value_is_kept(catalog):
@@ -152,6 +158,9 @@ def test_the_five_missing_ratings_stay_missing(catalog):
     without_rating = [p for p in canonical if p.rating is None]
     assert len(without_rating) == 5
     assert all(p.rating != 0 for p in without_rating)
+    assert all(p.color != "" for p in canonical)
+    assert all(p.material != "" for p in canonical)
+    assert any(p.color is None or p.material is None for p in canonical)
 
 
 def test_the_three_missing_occasions_stay_empty(catalog):
