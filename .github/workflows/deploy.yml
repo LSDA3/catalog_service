@@ -1,8 +1,9 @@
 name: Build the catalog and deploy
 
-# The usual trigger is a new catalog, but it is not the only one: changing the
-# vocabulary or the classification prompt also forces a rebuild, even when there
-# is not a single new product (A3.6).
+# The workflow runs for changes that can affect construction, runtime behaviour
+# or deployment. Running CI does not necessarily mean rebuilding the semantic
+# layer: model-backed construction runs only when one of its semantic inputs
+# changed.
 on:
   push:
     branches: [main]
@@ -43,13 +44,15 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+
     steps:
       - uses: actions/checkout@v4
         with:
-          # Two commits, because `enrich.py` needs to compare this vocabulary
-          # against the previous one to tell a new `product_type` from a change
-          # of criterion, and `validate_semantic.py` needs it for the growth
-          # invariant. With no history both fall back to the safe side.
+          # Two commits are needed to know what changed in this commit.
+          # `enrich.py` also compares the current vocabulary with the previous
+          # one to distinguish inventory growth from a change of criterion, and
+          # `validate_semantic.py` uses the previous revision for the growth
+          # invariant.
           fetch-depth: 2
 
       - uses: actions/setup-python@v5
@@ -67,33 +70,69 @@ jobs:
           pip install -r requirements.txt
           pip install anthropic
 
-      - name: Classify the own fields of the new products, or of all of them if vocabularies.yaml or enrich.md changed the criterion
+      - name: Classify the own fields when semantic construction is required
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: python scripts/enrich.py --csv data/catalog.csv --out data/semantic_layer.json
+        run: |
+          if ! git rev-parse HEAD~1 >/dev/null 2>&1; then
+            python scripts/enrich.py \
+              --csv data/catalog.csv \
+              --out data/semantic_layer.json
+          elif git diff --quiet HEAD~1 HEAD -- \
+            data/catalog.csv \
+            data/vocabularies.yaml \
+            prompts/enrich.md \
+            prompts/relate.md
+          then
+            echo "Semantic inputs unchanged; classification is not rebuilt."
+          else
+            python scripts/enrich.py \
+              --csv data/catalog.csv \
+              --out data/semantic_layer.json
+          fi
 
-      - name: Recompute the relations over the whole catalog
+      - name: Recompute the relations when semantic construction is required
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: python scripts/relate.py --csv data/catalog.csv --semantic data/semantic_layer.json
+        run: |
+          if ! git rev-parse HEAD~1 >/dev/null 2>&1; then
+            python scripts/relate.py \
+              --csv data/catalog.csv \
+              --semantic data/semantic_layer.json
+          elif git diff --quiet HEAD~1 HEAD -- \
+            data/catalog.csv \
+            data/vocabularies.yaml \
+            prompts/enrich.md \
+            prompts/relate.md
+          then
+            echo "Semantic inputs unchanged; relations are not rebuilt."
+          else
+            python scripts/relate.py \
+              --csv data/catalog.csv \
+              --semantic data/semantic_layer.json
+          fi
 
       - name: Coverage gate
-        # Exits with an error code if the two sets of identifiers are not equal,
-        # if the vocabulary version is not the expected one, if a value falls
-        # outside a closed vocabulary, if a use_case or functional_family is
-        # empty, if a relation is not sound, or if more product types appeared
-        # than new products. An error code means nothing is deployed.
-        run: python scripts/validate_semantic.py --csv data/catalog.csv --semantic data/semantic_layer.json
+        # The gate always runs. It validates the semantic artifact that the
+        # runtime service would consume, whether that artifact was rebuilt in
+        # this execution or was already committed.
+        run: |
+          python scripts/validate_semantic.py \
+            --csv data/catalog.csv \
+            --semantic data/semantic_layer.json
 
       - name: Tests
+        # Tests always run. Code, API or infrastructure changes must prove that
+        # the service still behaves correctly without forcing an unnecessary
+        # model-backed reconstruction.
         run: python -m pytest tests -q
 
       - name: Commit the recomputed catalog
-        # Both files, always: `enrich.py` may have registered a new
-        # `product_type` in the vocabulary, and an artifact that references a
-        # type the vocabulary does not carry closes the gate on the next run.
+        # When semantic construction changed either file, both travel together.
+        # When nothing changed, there is simply nothing to commit.
+        #
         # A push made with GITHUB_TOKEN does not trigger this workflow again, so
-        # this cannot loop.
+        # this cannot create a reconstruction loop.
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "Recompute the semantic layer"
