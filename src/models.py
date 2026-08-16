@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import enum
 from pathlib import Path
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field
@@ -322,7 +323,7 @@ class RelatedProduct(Product):
     where there is a starting point to talk about.
     """
 
-    relation_type: str | None = Field(
+    relation_type: Literal["equivalent", "same_function"] | None = Field(
         default=None,
         description=(
             "Nature of an `alternative_to` relationship. `equivalent` means the two "
@@ -368,23 +369,33 @@ class RecoverableError(BaseModel):
     branch of the API Block and the agent tells it apart by `error_type`.
     """
 
-    error_type: str = Field(
+    error_type: Literal[
+        "invalid_parameter",
+        "conflicting_parameters",
+        "missing_anchor",
+        "product_not_found",
+    ] = Field(
         description=(
             "Stable code identifying a recoverable problem with the request that "
             "prevented the catalog operation from executing. Use it to determine how "
             "the next call must be corrected."
         )
     )
-    detail: str = ""
-    parameter: str | None = None
+    parameter: str | list[str] | None = None
+    received: Any | None = None
     product_id: str | None = None
-    relation: str | None = None
+    relation: Literal["alternative_to", "pairs_with"] | None = None
 
 
 class TechnicalFailure(BaseModel):
-    """A real failure of the service. It travels with 5xx and its own vocabulary."""
+    """A real failure of the service. It travels outside the success path."""
 
-    error_code: str = Field(
+    error_code: Literal[
+        "service_unavailable",
+        "unauthorized",
+        "forbidden",
+        "rate_limited",
+    ] = Field(
         description=(
             "Stable code for a service-level failure. A technical failure does not "
             "mean the catalog contains no matching products."
@@ -397,11 +408,10 @@ class TechnicalFailure(BaseModel):
         )
     )
     retryable: bool = Field(
-        default=True,
         description=(
             "Whether repeating the same request may succeed without changing the "
             "customer's criteria."
-        ),
+        )
     )
 
 
