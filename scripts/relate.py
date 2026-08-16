@@ -19,10 +19,13 @@ Making the other end aware of either is the loader's job.
 
 **Nothing invalid is quietly turned into something valid here.** A reference to a
 product that does not exist, a product related to itself, a `relation_type`
-outside the vocabulary, an `alternative_to` already derived by shared
+outside the vocabulary, a persisted `same_function` already derived by shared
 `product_type`, or the same pair arriving twice with different natures is rejected.
-As in `enrich.py`, the model gets a limited chance to correct a rejected answer;
-if it keeps breaking a deterministic rule, the build stops without writing.
+An explicit `equivalent` is different: it carries a stronger semantic fact that
+runtime cannot infer from shared `product_type`, so it remains admissible when the
+catalog supports it. As in `enrich.py`, the model gets a limited chance to correct
+a rejected answer; if it keeps breaking a deterministic rule, the build stops
+without writing.
 
 This script **does not travel to the container**.
 """
@@ -136,9 +139,10 @@ def normalize_relations(
     **Everything else is an error.** This function does not repair the model: it
     does not drop a reference to a product that does not exist, does not silently
     swallow a product related to itself, does not turn an invalid `relation_type`
-    into `same_function`, and does not persist an `alternative_to` between
-    products whose shared `product_type` already gives the service that relation
-    at run time.
+    into `same_function`, and does not persist a `same_function` between products
+    whose shared `product_type` already gives the service that relation at run
+    time. An explicit `equivalent` remains admissible because runtime would derive
+    only `same_function` and cannot infer the stronger nature of that link.
     """
     problems: list[str] = []
     complement_holder: dict[tuple[str, str], str] = {}
@@ -198,12 +202,13 @@ def normalize_relations(
                 )
                 continue
             if (
-                product_types_by_id is not None
+                kind == "same_function"
+                and product_types_by_id is not None
                 and product_types_by_id.get(product_id) is not None
                 and product_types_by_id.get(product_id) == product_types_by_id.get(other)
             ):
                 problems.append(
-                    f"{product_id} · {other}: alternative_to is already derived from "
+                    f"{product_id} · {other}: same_function is already derived from "
                     f"shared product_type {product_types_by_id[product_id]!r} and must "
                     "not be persisted"
                 )
