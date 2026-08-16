@@ -240,10 +240,10 @@ def gender_specific_product_types(vocabularies_path: Path | str) -> dict[str, st
 # --------------------------------------------------------------------------
 
 
-def _fingerprint(row: dict[str, str]) -> tuple[str, str, str]:
+def _fingerprint(row: dict[str, str], index: int) -> tuple[str, float | None, str]:
     """Normalized name plus price plus description, which is the rule of A2.2."""
     name = " ".join((row.get("name") or "").split()).lower()
-    price = (row.get("price_eur") or "").strip()
+    price = normalize_price(row.get("price_eur", ""), index)
     description = " ".join((row.get("description") or "").split()).lower()
     return name, price, description
 
@@ -271,9 +271,9 @@ def canonicalize(
         rows = list(csv.DictReader(handle))
 
     warnings: list[QualityWarning] = []
-    groups: dict[tuple[str, str, str], list[tuple[int, dict[str, str]]]] = {}
+    groups: dict[tuple[str, float | None, str], list[tuple[int, dict[str, str]]]] = {}
     for index, row in enumerate(rows, start=2):  # row 1 is the header
-        groups.setdefault(_fingerprint(row), []).append((index, row))
+        groups.setdefault(_fingerprint(row, index), []).append((index, row))
 
     canonical: list[CanonicalProduct] = []
     for group in groups.values():
