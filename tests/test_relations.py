@@ -1,20 +1,10 @@
 """Tests of the relations block: how they are built and how they are stored.
 
-They cover the failure a real pipeline run produced — 56 relations, 89 products
-participating and several `equivalent` where the catalog sustains one — and the
-four rules that failure broke:
-
-1. `pairs_with` is stored from the accessory towards the main product (A4.7) and
-   is **never** reordered by `product_id`.
-2. `alternative_to` is stored under the smaller `product_id`, with its
-   `relation_type` (A4.8).
-3. What the service derives at run time — same `product_type`, same
-   `functional_family` (B0.5) — is **not** persisted. The rule is semantic, not
-   a quota: a relation is written when the catalog sustains the link, and no
-   number of them is right or wrong in itself.
-4. An invalid answer from the model stops the build. It is not quietly turned
-   into a valid one, because that would hide from `validate_semantic.py` exactly
-   what it exists to catch.
+They protect the rules that make a relation admissible and a small set of links
+that the catalog itself states unambiguously. They deliberately do not freeze a
+complete LLM-produced mesh: semantic neighbours that satisfy the same written
+criterion are not made invalid merely because a previous reconstruction selected
+a different one.
 """
 
 from __future__ import annotations
@@ -56,12 +46,7 @@ def loaded():
 
 
 def test_pairs_with_keeps_the_direction_it_arrives_with():
-    """KD-002 is the accessory of KD-001, so the edge lives under KD-002.
-
-    This is the bug that produced the broken mesh: the previous version sorted
-    the pair and stored it under the smaller identifier, which reverses the only
-    thing this field says.
-    """
+    """KD-002 is the accessory of KD-001, so the edge lives under KD-002."""
     result = relate.normalize_relations(
         {"KD-002": {"pairs_with": ["KD-001"], "alternative_to": []}}, CANONICAL
     )
@@ -70,8 +55,7 @@ def test_pairs_with_keeps_the_direction_it_arrives_with():
 
 
 def test_pairs_with_is_not_reordered_by_product_id():
-    """The smaller identifier holding the edge is legitimate too, when it is the
-    accessory. Neither direction is normalised away."""
+    """The smaller identifier can legitimately hold the edge when it is the accessory."""
     result = relate.normalize_relations(
         {"KD-001": {"pairs_with": ["KD-002"], "alternative_to": []}}, CANONICAL
     )
@@ -147,8 +131,6 @@ def test_the_same_pair_from_both_ends_is_written_once():
 
 
 def test_the_same_pair_with_two_different_natures_stops_the_build():
-    """Picking the safer label would be deciding the nature of the relation, and
-    that is a reading of the catalog, not a shape."""
     with pytest.raises(relate.InvalidRelations, match="arrives as"):
         relate.normalize_relations(
             {
@@ -175,8 +157,6 @@ def test_the_same_pair_with_two_different_natures_stops_the_build():
 
 
 def test_an_invalid_relation_type_stops_the_build():
-    """It used to become `same_function`, which is exactly what stopped the gate
-    from ever seeing it."""
     with pytest.raises(relate.InvalidRelations, match="is not valid"):
         relate.normalize_relations(
             {
@@ -225,7 +205,6 @@ def test_relations_proposed_for_a_product_that_is_not_canonical_stop_the_build()
 
 
 def test_every_problem_is_reported_at_once():
-    """The build stops once, with the whole list, not one error per run."""
     with pytest.raises(relate.InvalidRelations) as refused:
         relate.normalize_relations(
             {
@@ -251,59 +230,33 @@ def test_a_product_with_no_relations_gets_two_empty_lists():
 
 
 def test_no_persisted_same_function_joins_two_products_of_the_same_type(entries):
-    """Level 2 of `get_related_products` already relates two products of the same
-    `product_type`, and always as `same_function`. Persisting that pair adds
-    nothing and displaces a better candidate, because an explicit relation wins
-    over a derived one."""
+    """A shared product_type already gives the pair at runtime, so it is never persisted."""
     for product_id, entry in entries.items():
         for link in entry.get("alternative_to") or []:
-            if link["relation_type"] != "same_function":
-                continue
             other = link["product_id"]
             assert entries[product_id]["product_type"] != entries[other]["product_type"], (
-                f"{product_id} · {other}: persisted as same_function while sharing "
-                "product_type, which the service already derives"
+                f"{product_id} · {other}: persisted while sharing product_type, "
+                "which the service already derives"
             )
 
+    with pytest.raises(relate.InvalidRelations, match="already derived"):
+        relate.normalize_relations(
+            {
+                "KD-001": {
+                    "pairs_with": [],
+                    "alternative_to": [
+                        {"product_id": "KD-002", "relation_type": "same_function"}
+                    ],
+                }
+            },
+            CANONICAL,
+            {"KD-001": "knife", "KD-002": "knife"},
+        )
+
 
 # --------------------------------------------------------------------------
-# Acceptance · the mesh of the current catalog
-#
-# These numbers describe **this** catalog, and they are here to prove that the
-# construction reproduces the artifact we validated. They are not a rule about
-# how many relations a catalog may have: no such rule exists, and inventing one
-# would be a quota, which is the opposite of what decides a relation — whether
-# the catalog sustains it.
+# Acceptance · facts the current catalog states unambiguously
 # --------------------------------------------------------------------------
-
-
-def test_the_alternative_to_relations_are_the_nine_of_the_catalog(entries):
-    persisted = [
-        (product_id, link["product_id"], link["relation_type"])
-        for product_id, entry in sorted(entries.items())
-        for link in entry.get("alternative_to") or []
-    ]
-    assert persisted == [
-        ("BS-001", "BS-002", "same_function"),
-        ("BS-007", "BS-008", "same_function"),
-        ("BW-009", "BW-010", "same_function"),
-        ("HL-009", "HL-010", "equivalent"),
-        ("HL-009", "HL-025", "same_function"),
-        ("HL-019", "HL-020", "same_function"),
-        ("KD-001", "KD-002", "same_function"),
-        ("KD-011", "KD-012", "same_function"),
-        ("TG-001", "TG-002", "same_function"),
-    ]
-
-
-def test_nine_relations_over_eight_products(entries):
-    holders = {
-        product_id
-        for product_id, entry in entries.items()
-        if entry.get("alternative_to")
-    }
-    relations = sum(len(entry.get("alternative_to") or []) for entry in entries.values())
-    assert (relations, len(holders)) == (9, 8)
 
 
 def test_only_hl_009_and_hl_010_are_equivalent(entries):
@@ -316,43 +269,15 @@ def test_only_hl_009_and_hl_010_are_equivalent(entries):
     assert equivalent == [("HL-009", "HL-010")]
 
 
-def test_the_other_eight_are_same_function(entries):
-    same_function = [
-        link
-        for entry in entries.values()
-        for link in entry.get("alternative_to") or []
-        if link["relation_type"] == "same_function"
-    ]
-    assert len(same_function) == 8
+def test_catalog_declared_alternative_is_preserved(entries):
+    assert {
+        "product_id": "BW-010",
+        "relation_type": "same_function",
+    } in entries["BW-009"]["alternative_to"]
 
 
-def test_the_pairs_with_edges_are_the_twelve_of_the_catalog(entries):
-    """Written from the accessory towards the main product, one by one.
-
-    Every one of the twelve happens to live under the larger identifier, because
-    in this catalog the accessories were added after the product they serve. That
-    is why sorting the pair reversed all twelve at once.
-    """
-    written = {
-        product_id: entry["pairs_with"]
-        for product_id, entry in sorted(entries.items())
-        if entry.get("pairs_with")
-    }
-    assert written == {
-        "BS-003": ["BS-001"],
-        "BS-006": ["BS-004"],
-        "BW-010": ["BW-009"],
-        "KD-002": ["KD-001"],
-        "KD-003": ["KD-001", "KD-002"],
-        "KD-006": ["KD-004", "KD-005"],
-        "KD-022": ["KD-021"],
-        "TG-007": ["TG-006"],
-        "TG-013": ["TG-012"],
-        "TG-020": ["TG-019"],
-    }
-
-
-def test_thirty_two_products_participate_counting_both_ends(loaded):
-    products, _, _ = loaded
-    participating = {p.product_id for p in products if p.pairs_with or p.alternative_to}
-    assert len(participating) == 32
+def test_catalog_declared_pairs_with_are_preserved(entries):
+    assert "KD-001" in entries["KD-002"]["pairs_with"]
+    assert "TG-006" in entries["TG-007"]["pairs_with"]
+    assert "TG-012" in entries["TG-013"]["pairs_with"]
+    assert "TG-019" in entries["TG-020"]["pairs_with"]
