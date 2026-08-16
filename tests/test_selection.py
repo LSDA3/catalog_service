@@ -8,6 +8,7 @@ checked: `universal`, the missing values of `rating`, `gift_risk` modulated by
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 
@@ -91,9 +92,29 @@ def test_recipient_kids_is_the_only_recipient_value_that_cuts(catalog, gender_sp
     )
     assert all("kids" in p.recipient for p in inside)
 
-    with_her = selection.take_what_qualifies(catalog.all_products(), {"recipient": "her"}, gender_specific_types)
-    without_criteria = selection.take_what_qualifies(catalog.all_products(), {}, gender_specific_types)
-    assert len(with_her) == len(without_criteria)
+    without_criteria = selection.take_what_qualifies(
+        catalog.all_products(), {}, gender_specific_types
+    )
+    with_her = selection.take_what_qualifies(
+        catalog.all_products(), {"recipient": "her"}, gender_specific_types
+    )
+    assert {p.product_id for p in with_her} == {
+        p.product_id
+        for p in without_criteria
+        if p.product_type not in gender_specific_types or "her" in p.recipient
+    }
+
+    # `recipient` itself only cuts for kids. For adults, the only hard exclusion
+    # is the separate `gender_specific` rule above. Every product opened to
+    # `anyone` therefore matches every adult recipient at precedence level 4.
+    for requested in ("her", "him", "couple"):
+        for product in without_criteria:
+            if "anyone" in product.recipient:
+                assert selection.precedence_key(product, {"recipient": requested})[3] == 0
+
+    for product in without_criteria:
+        if "anyone" in product.recipient and "kids" not in product.recipient:
+            assert selection.precedence_key(product, {"recipient": "kids"})[3] == 1
 
 
 # --------------------------------------------------------------------------
@@ -225,10 +246,27 @@ def test_a_missing_rating_is_not_compared_as_zero(catalog):
     assert level_six[1] == 0.0  # and not a rating of zero
 
 
-def test_the_rating_rules_and_reviews_only_break_ties(catalog):
+def test_the_rating_rules_and_reviews_only_break_ties(catalog, gender_specific_types):
     better_rating = next(p for p in catalog.all_products() if p.product_id == "GP-005")  # 4.8 · 163
     more_reviews = next(p for p in catalog.all_products() if p.product_id == "GP-001")  # 4.7 · 588
     assert selection._level_six(better_rating) < selection._level_six(more_reviews)
+
+    # Category browsing with its default `rating` order starts at this level. It
+    # does not run the full gift-recommendation precedence, where `universal` and
+    # the other semantic criteria belong.
+    import api
+
+    of_the_category = [
+        p for p in catalog.all_products() if p.category == "Kitchen & Dining"
+    ]
+    inside = selection.take_what_qualifies(
+        of_the_category, {}, gender_specific_types, require_standalone_gift=False
+    )
+    ordered = sorted(inside, key=lambda p: (selection._level_six(p), p.product_id))
+    response = asyncio.run(api.get_products_by_category("Kitchen & Dining"))
+    assert [p.product_id for p in response.results] == [
+        p.product_id for p in ordered[:8]
+    ]
 
 
 def test_buyer_knows_recipient_skips_the_gift_risk_level(catalog):
@@ -354,3 +392,34 @@ def test_related_products_do_not_exceed_the_limit(catalog, gender_specific_types
             catalog.all_products(), "alternative_to", anchor, {}, limit_, gender_specific_types, quality
         )
         assert len(chosen) <= limit_
+
+    # With no product anchor there is still no generic fourth level. A concrete
+    # type can yield that type and its family; a family can yield that family.
+    # Neither path is allowed to fill the limit with unrelated products.
+    chosen = selection.related_products(
+        catalog.all_products(),
+        "alternative_to",
+        None,
+        {"product_type": "gift_card"},
+        5,
+        gender_specific_types,
+        quality,
+    )
+    same_type = [p for p in catalog.all_products() if p.product_type == "gift_card"]
+    family = {value for p in same_type for value in p.functional_family}
+    assert chosen
+    assert all(
+        p.product_type == "gift_card" or set(p.functional_family) & family for p in chosen
+    )
+
+    chosen = selection.related_products(
+        catalog.all_products(),
+        "alternative_to",
+        None,
+        {"functional_family": ["gift_card"]},
+        5,
+        gender_specific_types,
+        quality,
+    )
+    assert chosen
+    assert all("gift_card" in p.functional_family for p in chosen)
