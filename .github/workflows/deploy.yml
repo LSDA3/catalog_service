@@ -99,17 +99,21 @@ jobs:
             python scripts/relate.py \
               --csv data/catalog.csv \
               --semantic data/semantic_layer.json
-          elif git diff --quiet HEAD~1 HEAD -- \
+          elif ! git diff --quiet HEAD~1 HEAD -- \
             data/catalog.csv \
-            data/vocabularies.yaml \
-            prompts/enrich.md \
+            data/semantic_layer.json \
             prompts/relate.md
           then
-            echo "Semantic inputs unchanged; relations are not rebuilt."
-          else
             python scripts/relate.py \
               --csv data/catalog.csv \
               --semantic data/semantic_layer.json
+          elif ! git diff --quiet -- data/semantic_layer.json
+          then
+            python scripts/relate.py \
+              --csv data/catalog.csv \
+              --semantic data/semantic_layer.json
+          else
+            echo "Relation inputs unchanged; relations are not rebuilt."
           fi
 
       - name: Coverage gate
