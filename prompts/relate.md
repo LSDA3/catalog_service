@@ -60,6 +60,15 @@ No es "van bien juntos" en abstracto, compartir marca, subcategoría, tags o
 familia, ni ser dos objetos que podrían usarse en la misma rutina. Tiene que
 existir una relación directa entre ese complemento y ese producto principal.
 
+Ejemplos resueltos del propio catálogo:
+
+- *"Pairs with the gyuto"* declara `pairs_with`: el cuchillo de oficio acompaña
+  al gyuto.
+- *"Fits the 7in only"* declara `pairs_with`: la funda acompaña al e-reader de
+  7 pulgadas.
+- *"Twenty shots for the instant camera"* declara `pairs_with`: la película
+  repone la cámara instantánea.
+
 ## `alternative_to` — la relación de sustitución
 
 Antes de interpretar ninguna frase de las descripciones, haz esta comprobación:
@@ -95,6 +104,17 @@ Una frase como "same glaze", "same finish" o "same material" habla de una
 propiedad compartida, **no convierte dos objetos distintos en `equivalent`**.
 Para `equivalent` la evidencia tiene que referirse al producto como versión del
 otro, no a uno de sus atributos.
+
+Ejemplos resueltos del propio catálogo:
+
+- *"The everyday version of the alpaca"* sí sostiene `equivalent`: la manta de
+  algodón se describe como otra versión de la manta de alpaca.
+- *"Same glaze as the medium planter"* **no** sostiene `equivalent`: comparte un
+  acabado, no declara que el macetero colgante sea otra versión del objeto
+  completo. Si se conserva como alternativa, su etiqueta es `same_function`.
+- *"The answer to the risk above"* sostiene `same_function`: el set de muestras
+  permite regalar fragancia evitando el riesgo del perfume completo, pero no es
+  otra versión del mismo objeto.
 
 **Ante la duda entre las dos etiquetas, `same_function`.** Pero eso es elegir
 entre dos etiquetas **cuando la relación ya está justificada**. No es una excusa
