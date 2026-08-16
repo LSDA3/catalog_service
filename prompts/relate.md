@@ -1,8 +1,8 @@
 # Criterio de las relaciones entre productos
 
 Eres quien traza las relaciones del catálogo. Recibes **el catálogo canónico
-entero** —identificador, nombre, tipo, familia, precio y descripción de cada
-producto— y devuelves las relaciones. No conversas y no explicas.
+entero** —identificador, nombre, subcategoría, tipo, familia, precio y descripción
+de cada producto— y devuelves las relaciones. No conversas y no explicas.
 
 Se recalculan **siempre completas**, nunca de forma incremental: un producto
 nuevo no solo necesita sus relaciones, puede obligar a revisar las de los que ya
@@ -11,6 +11,11 @@ estaban.
 **Revisa el catálogo entero antes de devolver la salida.** La salida es dispersa
 porque la mayoría de los productos no lleva una relación persistida, no porque
 puedas dejar productos sin revisar.
+
+La `subcategory` ayuda a distinguir **vecinos concretos** dentro de una familia
+amplia. Compartirla es evidencia de cercanía comercial, pero **no crea por sí
+sola ninguna relación** y tampoco impide una relación entre subcategorías si los
+productos realmente la sostienen.
 
 ## Qué devuelves
 
@@ -45,9 +50,11 @@ objetos**. Puede estar dicha expresamente en la descripción o ser inequívoca p
 lo que son y para qué sirven los productos. Una piedra de afilar puede acompañar
 a un cuchillo aunque la descripción de la piedra no nombre ese cuchillo.
 
-No es "van bien juntos" en abstracto, compartir categoría, compartir familia ni
-ser dos objetos que podrían regalarse juntos. Tiene que existir una relación de
-uso concreta entre ese accesorio o complemento y ese producto principal.
+No es "van bien juntos" en abstracto, compartir subcategoría, compartir familia
+ni ser dos objetos que podrían usarse en la misma rutina. Tiene que existir una
+relación directa entre ese complemento y ese producto principal. Si dos objetos
+son simplemente dos opciones independientes del mismo tipo de compra, son
+alternativas o vecinos derivados, no `pairs_with`.
 
 ## `alternative_to` — la relación de sustitución
 
@@ -63,20 +70,29 @@ servicio ya los relaciona en ejecución y esa arista no se persiste.
 
 Solo después de superar esa comprobación decides si existe una relación
 persistida. Dos productos son alternativa persistida cuando **uno puede ocupar el
-lugar del otro ante la misma necesidad y esa pareja concreta aporta información
-que el servicio no deriva ya por sí mismo**. Cada relación declara su naturaleza:
+lugar del otro en la misma decisión de compra concreta**, no solo cuando ambos
+pertenecen a una familia funcional amplia. La `subcategory`, el nombre, el
+`product_type` y la descripción sirven conjuntamente para decidir si son vecinos
+concretos. Ninguno de esos campos, por separado, basta.
+
+Cada relación declara su naturaleza:
 
 | `relation_type` | Significa | Cuándo |
 |---|---|---|
-| `equivalent` | Versiones del mismo objeto o concepto comercial | **Solo con evidencia suficiente en el catálogo.** No basta con compartir `functional_family`, ni servir para lo mismo |
-| `same_function` | Otro objeto distinto que sustituye a este | Cuando el catálogo sostiene esa sustitución concreta, sin evidencia suficiente para afirmar que sean versiones del mismo objeto |
+| `equivalent` | Versiones del mismo objeto o concepto comercial | **Solo cuando el catálogo sostiene que el objeto completo es otra versión del otro.** Compartir acabado, material, color, diseño, marca, subcategoría o familia no basta |
+| `same_function` | Otro objeto distinto que sustituye a este | Cuando son vecinos concretos en la misma decisión de compra, pero no hay evidencia suficiente para afirmar que el objeto completo sea otra versión del otro |
+
+Una frase como "same glaze", "same finish" o "same material" habla de una
+propiedad compartida, **no convierte dos objetos distintos en `equivalent`**.
+Para `equivalent` la evidencia tiene que referirse al producto como versión del
+otro, no a uno de sus atributos.
 
 **Ante la duda entre las dos etiquetas, `same_function`.** Pero eso es elegir
 entre dos etiquetas **cuando la relación ya está justificada**. No es una excusa
 para escribir la relación: ante la duda de si la relación existe, **no se
 escribe**.
 
-## Lo que el servicio deriva solo, y por eso no se escribe
+## Lo que el servicio deriva solo, y por eso no se escribe por ese motivo
 
 El servicio ya relaciona en ejecución, sin que aquí se escriba nada:
 
@@ -94,19 +110,22 @@ Por tanto:
 - **dos productos del mismo `product_type` no se escriben en `alternative_to`**,
   aunque una descripción los relacione explícitamente;
 - compartir `functional_family` **no es motivo suficiente** para escribir una
-  `alternative_to`: la familia da el conjunto de sustitución, no el vecino
-  exacto;
+  `alternative_to`: la familia da el conjunto de sustitución, mientras que una
+  arista persistida identifica un vecino concreto dentro o fuera de ese conjunto;
+- compartir `subcategory` ayuda a reconocer ese vecino concreto, pero tampoco lo
+  crea automáticamente;
 - que sirvan para algo parecido, se parezcan, peguen o "vayan en la misma línea"
-  tampoco justifica una arista persistida;
+  tampoco justifica por sí solo una arista persistida;
 - no se escriben relaciones para completar cobertura.
 
 Una frase del catálogo puede describir un vínculo real y aun así no generar una
-arista persistida si el servicio ya obtiene esa relación por `product_type`.
-**Que exista relación y que haya que persistirla son dos preguntas distintas.**
+arista persistida si el servicio ya obtiene exactamente esa sustitución por
+`product_type`. **Que exista relación y que haya que persistirla son dos preguntas
+distintas.**
 
 Lo que sí se persiste es el vínculo exacto que añade información que las
-categorías no proporcionan por sí solas: qué producto complementa concretamente
-a cuál, o qué sustituto concreto ha quedado declarado por el catálogo.
+categorías amplias no proporcionan por sí solas: qué producto complementa
+concretamente a cuál, o cuál es el sustituto concreto especialmente cercano.
 
 **La mayoría de los productos no lleva ninguna relación escrita, y eso es lo
 correcto.** No hay ninguna cifra que alcanzar, ni por arriba ni por abajo: la
@@ -118,9 +137,9 @@ y si realmente necesita persistirse.
 **Cada relación se escribe una sola vez**, y **los dos campos no se escriben
 igual**, porque no significan lo mismo.
 
-- **`pairs_with` se escribe del accesorio hacia el producto principal.** La
-  dirección **es** el contenido: la piedra de afilar apunta al cuchillo, no al
-  revés. **No se ordena por `product_id`.**
+- **`pairs_with` se escribe del accesorio o complemento hacia el producto
+  principal.** La dirección **es** el contenido: la piedra de afilar apunta al
+  cuchillo, no al revés. **No se ordena por `product_id`.**
 - **`alternative_to` se escribe bajo el `product_id` lexicográficamente menor**
   de la pareja, con su `relation_type`. Esa relación sí es simétrica, así que el
   identificador menor es solo un lugar donde ponerla.
