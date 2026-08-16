@@ -192,6 +192,9 @@ def test_the_two_poor_descriptions_are_the_written_ones(catalog):
 )
 def test_the_price_normalizes_what_is_not_ambiguous(entra, sale):
     assert n.normalize_price(entra, 2) == sale
+    assert n._fingerprint(
+        {"name": "name", "price_eur": entra, "description": "description"}, 2
+    )[1] == sale
 
 
 def test_an_empty_price_leaves_the_product_without_price():
