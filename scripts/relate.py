@@ -53,6 +53,8 @@ def _card(product: normalization.CanonicalProduct, entry: dict) -> dict:
         "product_id": product.product_id,
         "name": product.name,
         "subcategory": product.subcategory,
+        "brand": product.brand,
+        "tags": product.tags,
         "product_type": entry.get("product_type"),
         "functional_family": entry.get("functional_family"),
         "price_eur": product.price,
@@ -139,8 +141,6 @@ def normalize_relations(
     at run time.
     """
     problems: list[str] = []
-    # The unordered pair → which product holds the `pairs_with` write, so a
-    # relation arriving in both directions can be told from a repetition.
     complement_holder: dict[tuple[str, str], str] = {}
     complements: dict[str, list[str]] = {}
     alternatives: dict[tuple[str, str], str] = {}
