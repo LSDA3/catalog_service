@@ -5,8 +5,23 @@ the whole catalog, and a new product may force revisiting the relations of
 products that were already there. If a new chef's knife arrives, the sharpening
 stone that points at the old one may have to point at both.
 
-It writes each relation **once**, under the lexicographically smaller
-`product_id` of the pair. Making the other end aware of it is the loader's job.
+It writes each relation **once**, and **the two fields do not store it the same
+way**, because they do not mean the same thing:
+
+- `pairs_with` is stored **from the accessory towards the main product** (A4.7).
+  The direction carries meaning — the sharpening stone points at the knife, not
+  the other way round — so it is preserved exactly as it arrives and **is never
+  reordered by `product_id`**.
+- `alternative_to` is symmetric, so it is stored under the **lexicographically
+  smaller `product_id`** of the pair (A4.8), together with its `relation_type`.
+
+Making the other end aware of either is the loader's job.
+
+**Nothing invalid is quietly turned into something valid here.** A reference to a
+product that does not exist, a product related to itself, a `relation_type`
+outside the vocabulary or the same pair arriving twice with different natures
+stop the build. Repairing them here would hide from `validate_semantic.py`
+exactly what it exists to catch.
 
 This script **does not travel to the container**.
 """
@@ -24,6 +39,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import normalization  # noqa: E402
 
 RELATION_TYPE = {"equivalent", "same_function"}
+
+
+class InvalidRelations(RuntimeError):
+    """The model proposed relations the design does not admit."""
 
 
 def _card(product: normalization.CanonicalProduct, entry: dict) -> dict:
@@ -54,47 +73,110 @@ def request_relations(catalog: list[dict], prompt: str) -> dict:
 
 
 def normalize_relations(proposals: dict, canonical: set[str]) -> dict[str, dict]:
-    """Leave a single write per pair, under the smaller identifier.
+    """Leave a single write per pair, under the rule each field actually has.
 
-    What arrives may carry the same pair in both directions or repeated: here it
-    is reduced to the shape the coverage gate demands, without scoring anything
-    and without inventing a relation that was not proposed.
+    **The only transformations done here are mechanical**, and each one is
+    written in the design:
+
+    - `pairs_with` keeps the direction it arrives with, because that direction
+      is the content: it goes from the accessory to the main product (A4.7).
+      An exact repetition is dropped; nothing else is touched.
+    - `alternative_to` moves to the lexicographically smaller `product_id` of
+      the pair, which is where A4.8 says it lives. Choosing the smaller of two
+      identifiers decides nothing about meaning.
+
+    **Everything else is an error and stops the build.** This function does not
+    repair the model: it does not drop a reference to a product that does not
+    exist, does not silently swallow a product related to itself, and does not
+    turn an invalid `relation_type` into `same_function`. Every one of those is
+    something `validate_semantic.py` exists to catch, and repairing it here
+    would guarantee the gate never sees it.
     """
-    pairs: dict[tuple[str, str], str] = {}
-    complements: set[tuple[str, str]] = set()
+    problems: list[str] = []
+    # The unordered pair → which product holds the `pairs_with` write, so a
+    # relation arriving in both directions can be told from a repetition.
+    complement_holder: dict[tuple[str, str], str] = {}
+    complements: dict[str, list[str]] = {}
+    alternatives: dict[tuple[str, str], str] = {}
 
-    for product_id, proposal in proposals.items():
+    for product_id, proposal in sorted(proposals.items()):
         if product_id not in canonical:
+            problems.append(
+                f"{product_id}: relations proposed for a product that is not canonical"
+            )
             continue
+
         for link in proposal.get("pairs_with") or []:
-            other = link["product_id"] if isinstance(link, dict) else link
-            if other in canonical and other != product_id:
-                complements.add(tuple(sorted((product_id, other))))
+            other = link.get("product_id") if isinstance(link, dict) else link
+            if not isinstance(other, str):
+                problems.append(f"{product_id}: pairs_with entry without a product_id")
+                continue
+            if other == product_id:
+                problems.append(f"{product_id}: pairs_with points at itself")
+                continue
+            if other not in canonical:
+                problems.append(
+                    f"{product_id}: pairs_with points at {other}, which is not canonical"
+                )
+                continue
+            pair = tuple(sorted((product_id, other)))
+            holder = complement_holder.get(pair)
+            if holder is None:
+                complement_holder[pair] = product_id
+                complements.setdefault(product_id, []).append(other)
+            elif holder != product_id:
+                # Both directions arrived. Which of the two is the accessory is
+                # the whole content of the field, and it cannot be decided here.
+                problems.append(
+                    f"{pair[0]} · {pair[1]}: pairs_with arrives in both directions, so "
+                    "which one is the accessory is undecided. It is stored once, from "
+                    "the accessory towards the main product"
+                )
+
         for link in proposal.get("alternative_to") or []:
-            if isinstance(link, dict):
-                other = link.get("product_id")
-                kind = link.get("relation_type", "same_function")
-            else:
-                other, kind = link, "same_function"
-            if other not in canonical or other == product_id:
+            if not isinstance(link, dict) or "product_id" not in link:
+                problems.append(f"{product_id}: alternative_to entry without a product_id")
+                continue
+            other = link["product_id"]
+            kind = link.get("relation_type")
+            if other == product_id:
+                problems.append(f"{product_id}: alternative_to points at itself")
+                continue
+            if other not in canonical:
+                problems.append(
+                    f"{product_id}: alternative_to points at {other}, which is not canonical"
+                )
                 continue
             if kind not in RELATION_TYPE:
-                kind = "same_function"  # when in doubt, the safe label
+                problems.append(
+                    f"{product_id} → {other}: relation_type {kind!r} is not valid. "
+                    f"It is one of {sorted(RELATION_TYPE)}, and it is not guessed here"
+                )
+                continue
             pair = tuple(sorted((product_id, other)))
-            # If the two ends disagree, the more conservative one wins.
-            previous = pairs.get(pair)
-            pairs[pair] = (
-                "equivalent" if previous == "equivalent" and kind == "equivalent" else
-                kind if previous is None else
-                ("equivalent" if previous == kind == "equivalent" else "same_function")
-            )
+            previous = alternatives.get(pair)
+            if previous is None:
+                alternatives[pair] = kind
+            elif previous != kind:
+                # Downgrading to the safe label would be deciding the nature of
+                # the relation, which is a reading of the catalog, not a shape.
+                problems.append(
+                    f"{pair[0]} · {pair[1]}: arrives as {previous!r} and as {kind!r}. "
+                    "The nature of a relation is read once, in construction, and it "
+                    "is not resolved by picking the safer of the two"
+                )
+
+    if problems:
+        raise InvalidRelations(
+            "the proposed relations are not admissible:\n  - " + "\n  - ".join(problems)
+        )
 
     relations: dict[str, dict] = {
         product_id: {"pairs_with": [], "alternative_to": []} for product_id in canonical
     }
-    for smaller, larger in sorted(complements):
-        relations[smaller]["pairs_with"].append(larger)
-    for (smaller, larger), kind in sorted(pairs.items()):
+    for holder, others in complements.items():
+        relations[holder]["pairs_with"] = sorted(others)
+    for (smaller, larger), kind in sorted(alternatives.items()):
         relations[smaller]["alternative_to"].append(
             {"product_id": larger, "relation_type": kind}
         )
@@ -124,7 +206,15 @@ def main() -> int:
     prompt = Path(options.prompt).read_text(encoding="utf-8")
     proposals = request_relations(catalog, prompt)
 
-    relations = normalize_relations(proposals, {p.product_id for p in canonical})
+    try:
+        relations = normalize_relations(proposals, {p.product_id for p in canonical})
+    except InvalidRelations as refused:
+        # Nothing is written. A half-repaired mesh is worse than none, because
+        # it passes the gate and relates badly.
+        print("\nThe proposed relations do NOT pass. Nothing is written.\n")
+        print(f"  {refused}")
+        return 1
+
     for product_id, entry in entries.items():
         entry["pairs_with"] = relations[product_id]["pairs_with"]
         entry["alternative_to"] = relations[product_id]["alternative_to"]

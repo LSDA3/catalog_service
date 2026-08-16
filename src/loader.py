@@ -33,9 +33,15 @@ class IncompleteSemanticLayer(Exception):
 def _resolve_both_ends(entries: dict[str, dict], field: str) -> dict[str, list[str]]:
     """Return the relation field resolved from both ends.
 
-    A relation is persisted **once**, under the smaller `product_id`. Making the
-    other end aware of it is the loader's job, not the file's: duplicating it in
-    the artifact would open the door to the two sides drifting apart.
+    A relation is persisted **once**, and each field is written under a different
+    rule: `pairs_with` from the accessory towards the main product (A4.7), and
+    `alternative_to` under the smaller `product_id` of the pair (A4.8). Making
+    the other end aware of it is the loader's job, not the file's: duplicating it
+    in the artifact would open the door to the two sides drifting apart.
+
+    Resolving is symmetric, so this function does not care which end holds the
+    write. The direction still matters in the file, because it is what says which
+    of the two products is the accessory.
     """
     resolved: dict[str, list[str]] = {key: [] for key in entries}
     for product_id, entry in entries.items():
