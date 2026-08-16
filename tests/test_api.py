@@ -148,9 +148,8 @@ def test_la_navegacion_lleva_total_y_offset(cliente):
     cuerpo = con_catalogo(
         cliente, "/products/by-category", category="Kitchen & Dining"
     ).json()
-    # El número exacto depende de si `is_standalone_gift` corta al navegar:
-    # sin ese corte son 20, con él 19. Pendiente de decisión.
-    assert cuerpo["total"] in (19, 20)
+    # 22 en la categoría, 2 agotados: navegar no exige `is_standalone_gift`.
+    assert cuerpo["total"] == 20
     assert cuerpo["offset"] == 0
     assert len(cuerpo["results"]) <= 8
     assert "not_applied" not in cuerpo
@@ -202,6 +201,27 @@ def test_ninguna_respuesta_lleva_los_campos_que_no_viajan(cliente):
     for producto in cuerpo["results"]:
         for campo in ("description_quality", "tags", "stock", "alt_product_ids"):
             assert campo not in producto
+
+
+def test_la_piedra_de_afilar_se_navega_aunque_no_sea_regalo(cliente):
+    cuerpo = con_catalogo(
+        cliente, "/products/by-category", category="Kitchen & Dining", limit=8, offset=8
+    ).json()
+    todos = {p["product_id"] for p in cuerpo["results"]}
+    segunda = con_catalogo(
+        cliente, "/products/by-category", category="Kitchen & Dining", limit=8, offset=16
+    ).json()
+    todos |= {p["product_id"] for p in segunda["results"]}
+    primera = con_catalogo(
+        cliente, "/products/by-category", category="Kitchen & Dining"
+    ).json()
+    todos |= {p["product_id"] for p in primera["results"]}
+    assert "KD-003" in todos
+
+
+def test_pero_la_busqueda_no_la_recomienda(cliente):
+    cuerpo = con_catalogo(cliente, "/products/search").json()
+    assert "KD-003" not in {p["product_id"] for p in cuerpo["results"]}
 
 
 def test_ninguna_operacion_devuelve_mas_de_ocho(cliente):

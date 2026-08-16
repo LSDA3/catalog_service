@@ -127,7 +127,8 @@ catalog-service/
 │   └── api.py                   FastAPI · endpoints · OpenAPI
 ├── tests/
 ├── .github/workflows/deploy.yml el pipeline
-├── requirements.txt             las dependencias del servicio
+├── requirements.txt             dependencias del servicio y de las pruebas
+├── .gitignore                   lo que no sube al repositorio
 ├── Dockerfile
 └── README.md
 ```
@@ -283,7 +284,7 @@ El protocolo `CatalogRepository`. Es lo que permite que el resto del código no 
 
 **Con `relation=pairs_with` no hay tres niveles**: se parte de los `pairs_with` explícitos del producto ancla, se aplican las fronteras activas y se ordena a los supervivientes con esa misma precedencia.
 
-**Y en `pairs_with` no se exige `is_standalone_gift`** (B2.7, registro B2ag): el complemento no tiene que sostenerse solo como regalo — la piedra de afilar, el muestrario de tintas o la funda son justo lo que se busca. `in_stock` sí corta también aquí, sin excepción.
+**`is_standalone_gift` lo exigen la búsqueda y `alternative_to`; no lo exigen `pairs_with`, `get_products_by_category` y `get_product_details`** (B2.7, registros B2ag y B2ah). Y en `pairs_with` no se exige (B2.7, registro B2ag): el complemento no tiene que sostenerse solo como regalo — la piedra de afilar, el muestrario de tintas o la funda son justo lo que se busca. `in_stock` sí corta también aquí, sin excepción.
 
 **La etiqueta la decide el vínculo, no el nivel.** `equivalent` solo con evidencia suficiente del catálogo; **todo lo demás es `same_function`**, incluida una relación explícita entre dos objetos distintos. Estar en el nivel 1 **no** implica `equivalent`.
 
@@ -590,8 +591,9 @@ Landing con el widget embebido y personalizado · servidor MCP con transporte st
 | **3** | Diecinueve tests | Veintiséis: siete nuevos sobre relacionados y sobre no ampliar lo que ya llegó completo |
 | **2.7** | El límite de tasa no decía cómo se cuenta | Ventana deslizante de 60 segundos en memoria, por credencial (B6.8, registro B6q) |
 | **4** | La imagen no tenía versión de Python | **Python 3.12** |
+| **1.1** | No había `.gitignore` | Creado, y añadido a A3.9: entorno virtual, temporales de Python, `.env` y `*.key` |
 | **1.1 · 4** | No había fichero de dependencias | `requirements.txt` en la raíz, y entra en la imagen. Añadido también a A3.9 |
-| **2.6** | No decía dónde corta `is_standalone_gift` | No corta en `pairs_with`; sí al recomendar y en `alternative_to` (B2.7, registro B2ag) |
+| **2.6 · 2.7** | No decía dónde corta `is_standalone_gift` | Tabla de las cinco operaciones: lo exigen la búsqueda y `alternative_to`; no lo exigen `pairs_with`, la navegación y el detalle (B2.7, registros B2ag y B2ah) |
 | **7.6** | No decía cuántas acciones se asignan como Tools | Cuatro Tools; `find_products_by_criteria` **no** se asigna |
 | **7.7** | Reaparecía `status = missing_required`, `search_count = 1` en cualquier Success, y las ramas no se limpiaban | La lógica vigente de C, con las tres reglas escritas debajo |
 | **8** | — | Se añade la prueba de la primera búsqueda: ocho, luego cinco, y un recuperable no la consume |

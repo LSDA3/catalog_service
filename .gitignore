@@ -1,0 +1,16 @@
+# Entorno virtual local
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Editores y sistema
+.vscode/
+.DS_Store
+
+# Nunca, bajo ningún concepto
+.env
+*.key

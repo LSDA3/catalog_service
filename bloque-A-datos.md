@@ -569,10 +569,13 @@ catalog-service/
 │   └── api.py                       FastAPI · endpoints · OpenAPI
 ├── tests/
 ├── .github/workflows/deploy.yml     el pipeline
-├── requirements.txt                 las dependencias del servicio
+├── requirements.txt                 dependencias del servicio y de las pruebas
+├── .gitignore                       lo que no sube al repositorio
 ├── Dockerfile
 └── README.md
 ```
+
+**Y qué no sube siquiera al repositorio.** `.gitignore` deja fuera el entorno virtual y los ficheros temporales de Python —se regeneran solos y ocupan cientos de megas— y, sobre todo, **`.env` y `*.key`**: un secreto subido a GitHub se considera comprometido aunque se borre después, porque queda en el historial. Es la red de seguridad de B6.5, que ya exige que las credenciales vivan fuera de la imagen y fuera de `fly.toml`.
 
 #### Qué viaja al contenedor y qué no
 
@@ -1377,6 +1380,8 @@ Comprobación de que el modelo de datos sostiene los seis escenarios que el brie
 
 | Versión | Cambio |
 |---|---|
+| v57 → v58 | **El árbol de A3.9 gana `.gitignore`.** Era el segundo fichero que hay que crear para construir y que el mapa del repositorio no nombraba, después de `requirements.txt`. Deja fuera el entorno virtual y los temporales de Python, y sobre todo **`.env` y `*.key`**: es la red de seguridad de B6.5 contra subir una credencial por descuido, que en GitHub queda en el historial aunque se borre. **No cambia qué entra en la imagen** ni ninguna decisión de A3 |
+| v56 → v57 | **Se completa dónde exige cada operación `is_standalone_gift`, con una tabla de las cinco.** La versión anterior cerró `pairs_with`; quedaban fuera la navegación y el detalle, y la navegación **contradecía una cifra ya medida**: B4.7 declara 20 en Kitchen & Dining descontando solo los dos agotados, y con el corte aplicado salían 19. Queda escrito: **exigen `is_standalone_gift` la búsqueda y `alternative_to`; no lo exigen `pairs_with`, la navegación y el detalle**. `in_stock` sigue sin excepción. No cambia ningún parámetro ni ninguna forma de respuesta. Registro **B2ah** |
 | v55 → v56 | **Se escribe dónde corta `is_standalone_gift`, que estaba implícito y se implementaba mal.** B2.7 lo daba como corte invariante *"siempre"* y a la vez decía que lo no autónomo *"sigue disponible como complemento en el paso 9"*, y B4.3 que un accesorio llega legítimamente por `get_related_products`. Aplicado al pie de la letra, **`relation=pairs_with` se quedaba sin seis de las doce parejas del catálogo**. Queda dicho: corta al recomendar y en `alternative_to`, **no corta en `pairs_with`**. **`in_stock` no tiene excepción** y sigue cortando en todo el servicio. No cambia ningún parámetro, ni la forma de la respuesta, ni la precedencia. Registro **B2ag** |
 | v54 → v55 | **Se escribe cómo se cuenta el límite de tasa.** B6.8 daba los dos números pero no el mecanismo, y el mecanismo tiene consecuencias que no se pueden descubrir programando: **ventana deslizante de 60 segundos en memoria del proceso, por credencial**, sin almacén externo, con el contador a cero en cada despliegue y contando por contenedor si algún día hubiera más de uno. Queda dicho además **por qué no choca con B0.2**: el estado que esa decisión descarta es el del negocio, y el contador no cambia la respuesta, solo si la petición se atiende. Registro **B6q** |
 | v53 → v54 | **El árbol de A3.9 gana `requirements.txt`.** El mapa del repositorio no declaraba dónde viven las dependencias del servicio, y el `Dockerfile` necesita instalarlas: era el único fichero que había que crear para construir y que la memoria no nombraba. **No cambia qué entra en la imagen ni qué se queda fuera**, ni ninguna otra decisión de A3 |
@@ -2920,6 +2925,16 @@ Doce fronteras, dos de ellas independientes de lo que diga el cliente.
 
 **Y sin esta excepción `pairs_with` quedaría inservible para la mitad de sus parejas.** De las doce del catálogo, **seis tienen un extremo que no es regalo por sí solo**, y son justo las que tienen sentido: la pluma con el muestrario de tintas, el cuchillo de chef y el de pelar con la piedra de afilar, el e-reader con su funda, el teclado con el muestrario de switches y la cámara instantánea con el pack de película.
 
+**Y tampoco corta al navegar una categoría.** `get_products_by_category` **enseña el estante, no recomienda** —para recomendar está `find_products_by_criteria`—, y un accesorio que está en la estantería se ve en la estantería. Es lo que ya cuenta B4.7 cuando mide **20 en Kitchen & Dining, que tiene 22 con dos agotados**: descuenta los agotados y nada más.
+
+| Operación | ¿Exige `is_standalone_gift`? |
+|---|---|
+| `find_products_by_criteria` | **Sí.** Recomienda |
+| `get_related_products · alternative_to` | **Sí.** Una alternativa sustituye al regalo, así que tiene que poder serlo |
+| `get_related_products · pairs_with` | **No.** El complemento es justo lo que se busca |
+| `get_products_by_category` | **No.** Navega el estante |
+| `get_product_details` | **No.** Devuelve el estado real de lo que el cliente nombre |
+
 **`in_stock` no tiene ninguna excepción.** Corta en todo el servicio, también en los complementos: no se puede vender lo que no hay.
 
 ### B2.8 Paso 6 · Orden por precedencia
@@ -3276,6 +3291,7 @@ Los treinta y tres campos, ninguno sin sitio. **La columna de precedencia reprod
 | **B2f** | **Una cadena de precedencia de ocho niveles sobre diez criterios**, declarada una sola vez e idéntica para todos los clientes. **Un criterio ausente no participa, y no hay nada que redistribuir** | La precedencia se asigna al criterio, no al producto: ningún producto recibe una nota, y no existe ninguna operación que combine criterios |
 | **B2g** | La precedencia existe para partir del concepto más abstracto y llegar al producto más específico. Va antes el criterio que más recorre esa distancia | Se mide por número de valores y tamaño del grupo mayor. `functional_family` y `use_case` comparten el primer nivel |
 | **B2ad** | **`rating` y `reviews_count` se comparan en cascada dentro de su nivel: primero por existencia —conocido antes que desconocido—, y entre conocidos `rating` descendente y, solo si empata, `reviews_count` descendente.** Si todo empata, el nivel no separa. **`null` nunca equivale a cero** | Es la única forma de comparar dos números sin combinarlos. Cualquier fórmula que los mezcle —media ponderada, media bayesiana, ajuste por volumen— reintroduce una puntuación por producto, que está prohibida. Y comparar por existencia hace la cascada **determinista sin inventar un valor**: convertir un nulo en cero le atribuiría a cinco productos una nota que nadie les ha puesto |
+| **B2ah** | **Tampoco se exige `is_standalone_gift` al navegar una categoría ni al pedir el detalle de un producto** | Navegar el estante no es ofrecer un regalo, y el detalle devuelve el estado real de lo que el cliente ha nombrado. Es la cifra que B4.7 ya declara medida: 20 de los 22 de Kitchen & Dining, descontando **solo** los dos agotados |
 | **B2ag** | **`is_standalone_gift` corta al recomendar y en `alternative_to`, y no corta en `pairs_with`** | Una alternativa sustituye al regalo y tiene que poder serlo; un complemento no. Con el corte aplicado a `pairs_with`, **seis de las doce parejas del catálogo quedarían vacías** —las que llevan la piedra de afilar, el muestrario de tintas, la funda, los switches y el pack de película—, que son precisamente las que tienen sentido. **`in_stock` no tiene excepción** |
 | **B2af** | **`use_case: universal` tiene precedencia propia dentro de su dimensión: coincidencia exacta > `universal` > sin coincidencia; y con `use_case` ausente en la consulta, `universal` va delante.** No cuenta como coincidencia con ningún valor concreto, desempata dentro de un mismo recuento de dimensiones y **nunca se escribe en la consulta** | Es la única forma de que un producto sin situación asociada no compita de tú a tú con el que sí encaja, y a la vez no quede al fondo con lo que no tiene nada que ver. Que el cliente no sepa decir la situación produce **ausencia** de `use_case`, no `universal`: sería inventar un criterio |
 | **B2ae** | **`description_quality` solo pone `ok` delante de `poor` entre productos que siguen empatados al llegar al nivel 8.** No garantiza que un `poor` no encabece nunca, y no se añade ninguna mecánica para garantizarlo | Es la regla general de la cadena aplicada al último nivel: los niveles se recorren y no se acumulan, así que ninguno posterior deshace lo que decidió uno anterior. Sostener *"un `poor` no encabeza jamás"* exigiría un corte o una reordenación final, y eso cambiaría la arquitectura por una frase demasiado fuerte |

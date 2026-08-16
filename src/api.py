@@ -280,7 +280,11 @@ async def get_products_by_category(
         }
     )
     de_la_categoria = [p for p in catalogo.todos() if p.category == category]
-    dentro = selection.coger_lo_que_cumple(de_la_categoria, criterios, EXCLUSIVOS_DE_GENERO)
+    # Navegar el estante no es ofrecer un regalo: aquí no se exige
+    # `is_standalone_gift`. `in_stock` sí corta, como en todo el servicio (B2.7).
+    dentro = selection.coger_lo_que_cumple(
+        de_la_categoria, criterios, EXCLUSIVOS_DE_GENERO, exigir_regalo_autonomo=False
+    )
     ordenados = selection.ordenar_por_precedencia(dentro, criterios, CALIDAD_POR_PRODUCTO)
 
     pagina = ordenados[offset : offset + limit]
