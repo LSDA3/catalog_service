@@ -124,10 +124,10 @@ def validate(csv_path: Path, semantic_layer_path: Path, vocabularies_path: Path)
     product_types_by_id = {
         product_id: entry.get("product_type") for product_id, entry in entries.items()
     }
-    canonicos, _ = normalization.canonicalize(
+    canonical, _ = normalization.canonicalize(
         csv_path, vocabularies_path, product_types_by_id
     )
-    identifiers = {product.product_id for product in canonicos}
+    identifiers = {product.product_id for product in canonical}
 
     # Exact set equality: neither missing nor orphan entries.
     missing = sorted(identifiers - set(entries))
@@ -169,7 +169,7 @@ def validate(csv_path: Path, semantic_layer_path: Path, vocabularies_path: Path)
             key_ = aliases_.lower()
             if key_ in owners and owners[key_] != kind_:
                 failures.append(
-                    f"the alias {alias!r} resolves to {owners[key_]!r} and to {kind_!r}"
+                    f"the alias {aliases_!r} resolves to {owners[key_]!r} and to {kind_!r}"
                 )
             owners[key_] = kind_
         if not (definition.get("definicion") if isinstance(definition, dict) else None):
@@ -233,8 +233,8 @@ def main() -> int:
     )
     if failures:
         print("The gate does NOT open. Nothing is deployed.\n")
-        for fallo in failures:
-            print(f"  · {fallo}")
+        for failure in failures:
+            print(f"  · {failure}")
         return 1
 
     print("Coverage complete and integrity sound. The gate opens.")

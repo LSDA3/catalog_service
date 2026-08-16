@@ -1,0 +1,69 @@
+# Configuration of the Fly application.
+#
+# The app `indigo-catalog-service` **already exists** and was created by hand.
+# This file only describes it: it must never be produced by `fly launch`, which
+# would try to create a second app and rewrite what is written here.
+#
+# `flyctl deploy` reads this file. Without it the deploy step of the workflow
+# stops before building anything, because it does not know which app it is
+# deploying, on which port the container listens, or in which region it lives.
+
+app = "indigo-catalog-service"
+
+# Frankfurt. The service is not called by a person from a browser: it is called
+# by indigo.ai, whose architecture is hosted there, once per turn of the
+# conversation while a customer waits for the answer. The region is chosen for
+# whoever calls, not for whoever writes the code.
+primary_region = "fra"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  # The same port the Dockerfile exposes and uvicorn listens on.
+  internal_port = 8080
+
+  # The catalog credential travels in a header. Over plain HTTP it would travel
+  # readable, so anything arriving without TLS is redirected before reaching the
+  # application.
+  force_https = true
+
+  # One machine always awake. `min_machines_running` only has an effect together
+  # with `stop` or `suspend`, so `auto_stop_machines` is not turned off: it is
+  # left on `stop` and the minimum is what keeps the machine up. Without this,
+  # the cold start of the first call would be paid by the customer waiting in
+  # the chat.
+  auto_start_machines = true
+  auto_stop_machines = "stop"
+  min_machines_running = 1
+
+  # An open port only proves that something is listening. This check proves that
+  # FastAPI answers, which is a different thing: an application that failed to
+  # load the catalog can still hold the port open.
+  #
+  # `/openapi.json` is used because it is the only route that answers 200 without
+  # a credential — indigo.ai has to read it to import the operations — and
+  # because it is served from memory, already built, so checking it costs
+  # nothing. Every other route would answer 401 to this probe and the machine
+  # would be declared dead while it is perfectly alive.
+  #
+  # `protocol = "http"` is not a contradiction with `force_https`. That redirect
+  # belongs to the edge, which is what faces the internet. This check is made by
+  # the Fly proxy against the internal port, inside the private network, and
+  # declaring the protocol keeps it from ever being answered with a redirect
+  # instead of the document.
+  [[http_service.checks]]
+    method = "GET"
+    path = "/openapi.json"
+    protocol = "http"
+    interval = "30s"
+    timeout = "5s"
+    # Enough for the process to start and load the 150 products into memory
+    # before the first check counts against it.
+    grace_period = "15s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  # The whole catalog lives in the memory of the process, but it is 150 products:
+  # what takes the room is Python with FastAPI, not the data.
+  memory = "512mb"

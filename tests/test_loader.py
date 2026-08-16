@@ -29,7 +29,7 @@ def loaded():
 
 
 # --------------------------------------------------------------------------
-# Test 1 · recuentos de carga
+# Test 1 · load counts
 # --------------------------------------------------------------------------
 
 
@@ -73,8 +73,8 @@ def test_there_are_5_stocking_filler(loaded):
 
 def test_catalog_and_semantic_layer_cover_the_same_set(loaded):
     products, _, _ = loaded
-    capa = json.loads(SEMANTIC_LAYER.read_text(encoding="utf-8"))
-    entries = capa["products"] if isinstance(capa, dict) and "products" in capa else capa
+    layer = json.loads(SEMANTIC_LAYER.read_text(encoding="utf-8"))
+    entries = layer["products"] if isinstance(layer, dict) and "products" in layer else layer
     keys_ = set(entries) if isinstance(entries, dict) else {e["product_id"] for e in entries}
     assert {p.product_id for p in products} == keys_
 
@@ -230,14 +230,14 @@ def test_excluded_and_not_applied_are_omitted_when_empty():
 
 
 def test_an_incomplete_semantic_layer_stops_the_start_up(tmp_path):
-    capa = json.loads(SEMANTIC_LAYER.read_text(encoding="utf-8"))
-    entries = capa["products"] if isinstance(capa, dict) and "products" in capa else capa
+    layer = json.loads(SEMANTIC_LAYER.read_text(encoding="utf-8"))
+    entries = layer["products"] if isinstance(layer, dict) and "products" in layer else layer
     if isinstance(entries, dict):
         entries.pop(next(iter(entries)))
     else:
         entries.pop(0)
     trimmed = tmp_path / "semantic_layer.json"
-    trimmed.write_text(json.dumps(capa), encoding="utf-8")
+    trimmed.write_text(json.dumps(layer), encoding="utf-8")
 
     with pytest.raises(loader.IncompleteSemanticLayer):
         loader.load(CSV, VOCABULARIES, trimmed)

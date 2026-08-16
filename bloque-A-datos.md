@@ -408,6 +408,22 @@ Después de esa sincronización:
 
 **La puerta sigue siendo una garantía, no el mecanismo que repara el artefacto.** `validate_semantic.py` comprueba la igualdad exacta y falla si, después de sincronizar, queda cualquier entrada ausente o huérfana.
 
+#### La clasificación se valida donde se produce, no solo al final
+
+`enrich.py` **no escribe nada que el vocabulario no admita**. Antes de guardar la respuesta del clasificador comprueba, valor a valor, que cada campo de vocabulario cerrado pertenece a **su** vocabulario, que ningún campo obligatorio vuelve vacío, y que el `product_type` o existe ya o viene acompañado de su alta.
+
+**Por qué hace falta si la puerta ya lo comprueba.** Porque la puerta comprueba lo mismo demasiado tarde. Cuando salta, el modelo ya ha corrido sobre los 150 productos, el artefacto ya se ha sobrescrito en el runner, y lo único que queda es un despliegue abortado que hay que volver a lanzar entero. La puerta protege **el artefacto**; esta comprobación protege **la ejecución**. Son la misma regla aplicada en dos momentos, y ninguna de las dos sustituye a la otra.
+
+**Qué error corrige de verdad.** El clasificador casi nunca inventa una palabra que no existe: lo que hace es **poner un valor real en el campo equivocado**. Por eso la comprobación no se limita a decir que un valor no vale, sino que dice **a qué vocabulario pertenece realmente**:
+
+> `home_decor` no es un valor de `functional_family`: pertenece a `use_case`. Elige un valor de `functional_family` de su propia lista.
+
+Decir solo *"`home_decor` no vale"* invita al modelo a inventarse otra palabra. Decirle dónde encaja de verdad le señala el error que ha cometido.
+
+**Qué pasa cuando falla.** El valor rechazado vuelve al modelo con ese mensaje, hasta **tres intentos**. Si insiste, la ejecución **termina con error y no se escribe nada** — ni ese producto ni los ya clasificados en esa misma pasada. Un artefacto a medio escribir es peor que ninguno, porque parece terminado.
+
+**Lo que esta comprobación no hace, y es deliberado:** no traduce, no aproxima y no corrige por su cuenta un valor inválido por el que le parezca más cercano. Eso sería inventar clasificación, que es exactamente lo que el vocabulario cerrado existe para impedir.
+
 **Ficheros implicados en el repositorio:**
 
 | Fichero | Papel |
@@ -583,9 +599,23 @@ catalog-service/
 ├── .github/workflows/deploy.yml     el pipeline
 ├── requirements.txt                 dependencias del servicio y de las pruebas
 ├── .gitignore                       lo que no sube al repositorio
+├── .dockerignore                    lo que no viaja al constructor de la imagen
 ├── Dockerfile
+├── fly.toml                         la configuración de la aplicación de Fly
 └── README.md
 ```
+
+**`vocabularies.yaml` y `semantic_layer.json` viven en `data/` y solo ahí.** No hay copia en la raíz. Dos ficheros con el mismo nombre y distinto contenido es la forma más barata de clasificar contra un vocabulario y validar contra otro, y el fallo no se vería: los dos ficheros son válidos por separado.
+
+**`.gitignore` y `.dockerignore` no son el mismo fichero con otro nombre.** Responden a preguntas distintas y en momentos distintos:
+
+| | `.gitignore` | `.dockerignore` |
+|---|---|---|
+| Qué decide | Qué **no sube al repositorio** | Qué **no viaja al constructor** de la imagen |
+| Cuándo actúa | Al hacer commit | Al hacer `flyctl deploy` |
+| Qué deja fuera de más | — | `prompts/`, `scripts/`, `tests/` y los documentos: están en el repositorio a propósito, y en la imagen no pintan nada |
+
+Sin `.dockerignore` el despliegue empieza subiendo la carpeta entera —entorno virtual e historial de git incluidos— aunque el `Dockerfile` luego solo copie `src/` y `data/`.
 
 **Y qué no sube siquiera al repositorio.** `.gitignore` deja fuera el entorno virtual, los paquetes descargados para trabajar en local y los ficheros temporales de Python —se regeneran solos y ocupan cientos de megas— y, sobre todo, **`.env` y `*.key`**: un secreto subido a GitHub se considera comprometido aunque se borre después, porque queda en el historial. Es la red de seguridad de B6.5, que ya exige que las credenciales vivan fuera de la imagen y fuera de `fly.toml`.
 
@@ -1414,6 +1444,7 @@ Comprobación de que el modelo de datos sostiene los seis escenarios que el brie
 
 | Versión | Cambio |
 |---|---|
+| v60 → v61 | **La clasificación se valida donde se produce, y el mapa del repositorio gana los dos ficheros del despliegue.** Un `Action` real falló en la puerta con `HL-014 → home_decor` y `JW-002` y `JW-007 → personal_style` en `functional_family`: los tres son valores reales **de `use_case`**, puestos en el campo equivocado. La puerta hizo su trabajo, pero demasiado tarde — el modelo ya había corrido sobre los 150 y el artefacto ya estaba sobrescrito. Ahora **`enrich.py` comprueba cada valor contra su vocabulario antes de escribirlo**, y cuando lo rechaza le dice al modelo **a qué vocabulario pertenece de verdad**, que es el error que comete: tres intentos, y si insiste la ejecución termina sin escribir nada. **La puerta no se toca y sigue rechazando exactamente lo mismo**: protegen cosas distintas, el artefacto una y la ejecución la otra. A3.9 gana **`.dockerignore` y `fly.toml`**, y queda escrito que `vocabularies.yaml` y `semantic_layer.json` viven **solo en `data/`**: las copias de la raíz se retiran, porque dos ficheros con el mismo nombre y distinto contenido clasificarían contra un vocabulario y validarían contra otro sin que el diff delatara nada. **Ninguna clasificación, ningún vocabulario y ninguna regla de selección cambian** |
 | v59 → v60 | **Se cierra cómo se da de alta un `product_type` nuevo, que era el último hueco de implementación.** Lo escribe **`enrich.py` en la misma ejecución que lo descubre**, con la `definicion` y los alias que devuelve el clasificador, y **`vocabulary_version` no sube**: crece el inventario, no cambia el significado del dominio. **A3.6 se corrige en consecuencia**, porque su regla anterior —*"si cambia `vocabularies.yaml`, reclasificación completa"*— habría hecho que el pipeline se reclasificara a sí mismo entero cada vez que entra un producto nuevo. Quedan distinguidas las **dos clases de cambio** en ese fichero: el alta de un tipo no fuerza nada; cualquier cambio de criterio sigue forzando los 150. **La fragmentación no se evita con revisión humana** —el flujo no la tiene— sino con el criterio del clasificador, que recibe los tipos existentes y tiene la instrucción de reutilizar antes que crear: `cooking_knife` existiendo `chef_knife` es una clasificación incorrecta. La puerta valida lo determinista: definición, alias sin ambigüedad, ningún tipo en uso desaparecido, y **no más tipos nuevos que productos nuevos** |
 | v58 → v59 | **Se escriben los nombres que la especificación publica y que el documento no tenía.** B4 describía los envelopes con su forma JSON, y un ejemplo no necesita nombre; en cuanto se publican en un contrato legible por máquina, el **nombre del esquema es lo que lee indigo.ai**. Quedan fijados: cada respuesta se llama **como su operación** —`GetCategoriesResponse` y las otras cuatro— y se añade **un único nombre nuevo, `RelatedProduct`**, para el elemento de relacionados, que es un `Product` más su `relation_type` y por eso no puede llamarse `Product`. **Las rutas tampoco estaban**: son el `operation_id`, sin más, para que ruta, operación y esquema digan lo mismo. No cambia ninguna forma, ningún parámetro ni ninguna regla |
 | v57 → v58 | **El árbol de A3.9 gana `.gitignore`.** Era el segundo fichero que hay que crear para construir y que el mapa del repositorio no nombraba, después de `requirements.txt`. Deja fuera el entorno virtual y los temporales de Python, y sobre todo **`.env` y `*.key`**: es la red de seguridad de B6.5 contra subir una credencial por descuido, que en GitHub queda en el historial aunque se borre. **No cambia qué entra en la imagen** ni ninguna decisión de A3 |

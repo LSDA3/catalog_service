@@ -48,12 +48,12 @@ def request_relations(catalog: list[dict], prompt: str) -> dict:
         system=prompt,
         messages=[{"role": "user", "content": json.dumps(catalog, ensure_ascii=False)}],
     )
-    text_ = "".join(bloque.text for bloque in response.content if bloque.type == "text")
+    text_ = "".join(block.text for block in response.content if block.type == "text")
     start_, end_ = text_.find("{"), text_.rfind("}")
     return json.loads(text_[start_ : end_ + 1])
 
 
-def normalize_relations(proposals: dict, canonicos: set[str]) -> dict[str, dict]:
+def normalize_relations(proposals: dict, canonical: set[str]) -> dict[str, dict]:
     """Leave a single write per pair, under the smaller identifier.
 
     What arrives may carry the same pair in both directions or repeated: here it
@@ -63,20 +63,20 @@ def normalize_relations(proposals: dict, canonicos: set[str]) -> dict[str, dict]
     pairs: dict[tuple[str, str], str] = {}
     complements: set[tuple[str, str]] = set()
 
-    for product_id, propuesta in proposals.items():
-        if product_id not in canonicos:
+    for product_id, proposal in proposals.items():
+        if product_id not in canonical:
             continue
-        for link in propuesta.get("pairs_with") or []:
+        for link in proposal.get("pairs_with") or []:
             other = link["product_id"] if isinstance(link, dict) else link
-            if other in canonicos and other != product_id:
+            if other in canonical and other != product_id:
                 complements.add(tuple(sorted((product_id, other))))
-        for link in propuesta.get("alternative_to") or []:
+        for link in proposal.get("alternative_to") or []:
             if isinstance(link, dict):
                 other = link.get("product_id")
                 kind = link.get("relation_type", "same_function")
             else:
                 other, kind = link, "same_function"
-            if other not in canonicos or other == product_id:
+            if other not in canonical or other == product_id:
                 continue
             if kind not in RELATION_TYPE:
                 kind = "same_function"  # when in doubt, the safe label
@@ -90,7 +90,7 @@ def normalize_relations(proposals: dict, canonicos: set[str]) -> dict[str, dict]
             )
 
     relations: dict[str, dict] = {
-        product_id: {"pairs_with": [], "alternative_to": []} for product_id in canonicos
+        product_id: {"pairs_with": [], "alternative_to": []} for product_id in canonical
     }
     for smaller, larger in sorted(complements):
         relations[smaller]["pairs_with"].append(larger)
@@ -116,15 +116,15 @@ def main() -> int:
     product_types_by_id = {
         product_id: entry.get("product_type") for product_id, entry in entries.items()
     }
-    canonicos, _ = normalization.canonicalize(
+    canonical, _ = normalization.canonicalize(
         options.csv, options.vocabularies, product_types_by_id
     )
 
-    catalog = [_card(p, entries.get(p.product_id, {})) for p in canonicos]
+    catalog = [_card(p, entries.get(p.product_id, {})) for p in canonical]
     prompt = Path(options.prompt).read_text(encoding="utf-8")
     proposals = request_relations(catalog, prompt)
 
-    relations = normalize_relations(proposals, {p.product_id for p in canonicos})
+    relations = normalize_relations(proposals, {p.product_id for p in canonical})
     for product_id, entry in entries.items():
         entry["pairs_with"] = relations[product_id]["pairs_with"]
         entry["alternative_to"] = relations[product_id]["alternative_to"]

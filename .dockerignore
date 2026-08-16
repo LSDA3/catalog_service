@@ -1,0 +1,40 @@
+# The build context that travels to the Fly builder.
+#
+# The Dockerfile only copies `src/` and `data/`, but without this file the whole
+# folder is uploaded to the builder first: 33 MB instead of 0.3 MB, of which
+# 22 MB is the local virtual environment and 5 MB is the git history.
+
+# Local environment and packages downloaded to work offline
+.venv/
+venv/
+wheels/
+
+# History and automation
+.git/
+.gitignore
+.github/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# What must never enter the image, and it is a security decision, not a size
+# one (A3.7): the classification criterion and the code that would make the call
+# to the model.
+prompts/
+scripts/
+tests/
+
+# Documents. They belong to the repository, not to the machine that runs.
+*.md
+
+# Deployment configuration. `flyctl` reads it from disk before building; the
+# container has no use for it.
+fly.toml
+
+# Editors, operating system, credentials
+.vscode/
+.DS_Store
+.env
+*.key

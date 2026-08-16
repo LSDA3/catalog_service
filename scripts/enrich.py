@@ -10,6 +10,13 @@ classified with the previous criterion. Leaving them untouched mixes two
 classifications inside the same file, and **the failure is invisible** — the
 artifact is still valid, passes the coverage gate and classifies badly.
 
+**Nothing leaves this script outside the vocabulary.** The closed vocabularies
+are checked here, on the answer of the model, before a single value is written.
+An invalid value is returned to the model naming what is wrong with it, and if it
+insists the run stops without writing. The coverage gate keeps checking exactly
+the same thing afterwards: this does not replace it, it stops feeding it work it
+should never receive.
+
 This script **does not travel to the container**. The model key is injected only
 here.
 """
@@ -29,7 +36,13 @@ import normalization  # noqa: E402
 
 VOCABULARIES = "data/vocabularies.yaml"
 ENRICH_PROMPT = "prompts/enrich.md"
+# The two files that define **the criterion**. Touching either of them
+# reclassifies the whole catalog.
+CRITERION_FILES = (VOCABULARIES, ENRICH_PROMPT)
 CLOSED_VOCABULARIES = ("use_case", "functional_family", "gift_risk", "suitable_relationships")
+# The fields that may never come back empty. `product_type` is checked apart,
+# because it is the only one that may legitimately not exist yet.
+NEVER_EMPTY = ("functional_family", "use_case", "gift_risk")
 OWN_FIELDS = (
     "product_type",
     "functional_family",
@@ -39,6 +52,15 @@ OWN_FIELDS = (
     "is_standalone_gift",
     "stocking_filler",
 )
+# How many times the model is given the chance to correct itself before the run
+# stops. Two corrections are plenty for a value that is simply in the wrong
+# field; more than that is not a slip, it is a disagreement about the criterion,
+# and that is decided by a person, not by another attempt.
+ATTEMPTS = 3
+
+
+class InvalidClassification(RuntimeError):
+    """The model kept returning values the vocabulary does not admit."""
 
 
 def files_in_commit() -> list[str]:
@@ -55,7 +77,7 @@ def files_in_commit() -> list[str]:
         # the safe side. Classifying too much costs cents; classifying too little
         # with a new criterion produces a valid and wrong file.
         return list(CRITERION_FILES)
-    return [linea for linea in output.stdout.splitlines() if linea]
+    return [line for line in output.stdout.splitlines() if line]
 
 
 def _vocabulary_at(revision: str, path_in_repo: str) -> dict | None:
@@ -126,6 +148,69 @@ def criterion_changed(changed: list[str], vocabularies_path: str | Path) -> bool
     return False
 
 
+def _fields_holding(value: str, vocabulary: dict) -> list[str]:
+    """Which vocabularies do admit this value.
+
+    This is the whole point of the check. The classifier does not usually invent
+    words out of nothing: it puts a real value in the wrong field. Telling it
+    *"`home_decor` is a `use_case`, not a `functional_family`"* corrects the
+    actual mistake, whereas *"`home_decor` is not valid"* invites it to invent a
+    different word.
+    """
+    return [
+        field
+        for field in ("product_type", *CLOSED_VOCABULARIES)
+        if isinstance(vocabulary.get(field), dict) and value in vocabulary[field]
+    ]
+
+
+def problems_with(own: dict, proposal: dict | None, vocabulary: dict) -> list[str]:
+    """Everything the vocabulary refuses in this answer, said in one line each.
+
+    The same text is printed in the CI log and handed back to the model, so what
+    a person reads when the run stops is exactly what the model was told.
+    """
+    complaints: list[str] = []
+
+    for field in CLOSED_VOCABULARIES:
+        if field not in own:
+            continue
+        value = own[field]
+        values = value if isinstance(value, list) else [value]
+        for single in values:
+            if single in vocabulary.get(field, {}):
+                continue
+            elsewhere = [other for other in _fields_holding(single, vocabulary) if other != field]
+            if elsewhere:
+                complaints.append(
+                    f"`{single}` is not a value of `{field}`: it belongs to "
+                    f"`{elsewhere[0]}`. Choose a value of `{field}` from its own list."
+                )
+            else:
+                complaints.append(
+                    f"`{single}` does not exist in any vocabulary. `{field}` is closed: "
+                    "choose only from the list you were given."
+                )
+
+    for field in NEVER_EMPTY:
+        if not own.get(field):
+            complaints.append(f"`{field}` came back empty, and it may never be empty.")
+
+    kind = own.get("product_type")
+    if not kind:
+        complaints.append("`product_type` came back empty.")
+    elif kind not in vocabulary.get("product_type", {}):
+        if not proposal or proposal.get("key") != kind:
+            complaints.append(
+                f"`{kind}` is not a registered `product_type`. Either reuse an existing "
+                "type that represents the same object, or return it in "
+                f"`new_product_type` with `key` exactly `{kind}`, its definition and "
+                "its aliases. It is not used without declaring it."
+            )
+
+    return complaints
+
+
 def register_new_types(vocabularies_path: str | Path, proposals: dict[str, dict]) -> list[str]:
     """Write into the vocabulary the types a new product introduced.
 
@@ -191,22 +276,40 @@ def vocabulary_for_the_prompt(vocabularies_path: str | Path) -> str:
     for key_, definition in vocabulary["product_type"].items():
         text_ = definition.get("definicion", "") if isinstance(definition, dict) else ""
         aliases_ = definition.get("aliases", []) if isinstance(definition, dict) else []
-        suffix = f" (aliases_: {', '.join(aliases_)})" if aliases_ else ""
+        suffix = f" (aliases: {', '.join(aliases_)})" if aliases_ else ""
         blocks.append(f"- `{key_}`: {text_}{suffix}")
 
     return "\n".join(blocks)
 
 
-def classify(product: normalization.CanonicalProduct, prompt: str) -> dict:
-    """Ask the model for the own fields of one product.
+def _own_and_proposal(text_: str) -> tuple[dict, dict | None]:
+    """Read the JSON out of the answer and keep only what belongs to the entry."""
+    start_, end_ = text_.find("{"), text_.rfind("}")
+    entry = json.loads(text_[start_ : end_ + 1])
+    own = {field: entry[field] for field in OWN_FIELDS if field in entry}
+    # A type the vocabulary does not have yet travels with its definition and its
+    # aliases, so it can be registered without inventing anything.
+    proposal = entry.get("new_product_type")
+    return own, (proposal if isinstance(proposal, dict) and proposal.get("key") else None)
+
+
+def classify(
+    product: normalization.CanonicalProduct, prompt: str, vocabulary: dict
+) -> tuple[dict, dict | None]:
+    """Ask the model for the own fields of one product, and accept only valid ones.
 
     The call happens here and only here, with the key CI injects. The container
     carries neither the key, nor the prompt, nor this file.
+
+    An answer that falls outside the vocabulary is not written and is not
+    repaired by hand either: it goes back to the model saying which value is
+    wrong and which vocabulary it really belongs to. After `ATTEMPTS` tries the
+    run stops with an error, so **nothing invalid is ever written**.
     """
     from anthropic import Anthropic
 
     client_ = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    ficha = {
+    card = {
         "product_id": product.product_id,
         "name": product.name,
         "category": product.category,
@@ -220,23 +323,50 @@ def classify(product: normalization.CanonicalProduct, prompt: str) -> dict:
         "material": product.material,
         "description": product.description,
     }
-    response = client_.messages.create(
-        model=os.environ.get("ENRICH_MODEL", "claude-sonnet-4-5"),
-        max_tokens=1024,
-        system=prompt,
-        messages=[{"role": "user", "content": json.dumps(ficha, ensure_ascii=False)}],
-    )
-    text_ = "".join(bloque.text for bloque in response.content if bloque.type == "text")
-    start_, end_ = text_.find("{"), text_.rfind("}")
-    entry = json.loads(text_[start_ : end_ + 1])
-    own = {field: entry[field] for field in OWN_FIELDS if field in entry}
-    # A type the vocabulary does not have yet travels with its definition and its
-    # aliases, so it can be registered without inventing anything.
-    proposal = entry.get("new_product_type")
-    return own, (proposal if isinstance(proposal, dict) and proposal.get("key") else None)
+    messages = [{"role": "user", "content": json.dumps(card, ensure_ascii=False)}]
+
+    for attempt in range(1, ATTEMPTS + 1):
+        response = client_.messages.create(
+            model=os.environ.get("ENRICH_MODEL", "claude-sonnet-4-5"),
+            max_tokens=1024,
+            system=prompt,
+            messages=messages,
+        )
+        text_ = "".join(block.text for block in response.content if block.type == "text")
+        own, proposal = _own_and_proposal(text_)
+
+        complaints = problems_with(own, proposal, vocabulary)
+        if not complaints:
+            return own, proposal
+
+        for complaint in complaints:
+            print(f"      attempt {attempt}: {complaint}")
+        if attempt == ATTEMPTS:
+            raise InvalidClassification(
+                f"{product.product_id} {product.name}: the classification still falls "
+                f"outside the vocabulary after {ATTEMPTS} attempts:\n  - "
+                + "\n  - ".join(complaints)
+            )
+
+        messages.append({"role": "assistant", "content": text_})
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "That answer is not admissible:\n- "
+                    + "\n- ".join(complaints)
+                    + "\n\nReturn the whole JSON again, corrected. Do not invent new "
+                    "values and do not explain anything."
+                ),
+            }
+        )
+
+    raise InvalidClassification(product.product_id)  # unreachable, kept explicit
 
 
 def main() -> int:
+    import yaml
+
     parser = argparse.ArgumentParser(description="Own fields of the products")
     parser.add_argument("--csv", required=True)
     parser.add_argument("--out", required=True)
@@ -251,7 +381,7 @@ def main() -> int:
     product_types_by_id = {
         product_id: entry.get("product_type") for product_id, entry in entries.items()
     }
-    canonicos, _ = normalization.canonicalize(
+    canonical, _ = normalization.canonicalize(
         options.csv, options.vocabularies, product_types_by_id
     )
 
@@ -259,31 +389,44 @@ def main() -> int:
     full_run = criterion_changed(changed, options.vocabularies)
     if full_run:
         print("The commit touches the criterion: every product is reclassified.")
-        pending = canonicos
+        pending = canonical
     else:
-        pending = [p for p in canonicos if p.product_id not in entries]
+        pending = [p for p in canonical if p.product_id not in entries]
         print(f"The criterion has not changed: {len(pending)} new products are classified.")
 
     if pending:
+        vocabulary = yaml.safe_load(
+            Path(options.vocabularies).read_text(encoding="utf-8")
+        )
         prompt = (
             Path(options.prompt).read_text(encoding="utf-8")
             + "\n\n---\n\n"
             + vocabulary_for_the_prompt(options.vocabularies)
         )
+        classified: dict[str, dict] = {}
         proposals: dict[str, dict] = {}
         for product in pending:
-            own, proposal = classify(product, prompt)
-            entries[product.product_id] = own
+            try:
+                own, proposal = classify(product, prompt, vocabulary)
+            except InvalidClassification as refused:
+                # Nothing is written: neither this product nor the ones already
+                # classified in this run. A half-written artifact is worse than
+                # no artifact, because it looks finished.
+                print("\nThe classification does NOT pass. Nothing is written.\n")
+                print(f"  {refused}")
+                return 1
+            classified[product.product_id] = own
             if proposal:
                 proposals[proposal["key"]] = proposal
             print(f"  · {product.product_id} {product.name}")
 
+        entries.update(classified)
         registered = register_new_types(options.vocabularies, proposals)
         for key in registered:
             print(f"  + product_type registered: {key}")
 
     # Orphan entries leave together with the product that justified them.
-    current = {p.product_id for p in canonicos}
+    current = {p.product_id for p in canonical}
     entries = {k: v for k, v in entries.items() if k in current}
 
     result_ = {
@@ -294,7 +437,7 @@ def main() -> int:
     output.write_text(
         json.dumps(result_, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
-    print(f"{len(entries)} entries written en {output}")
+    print(f"{len(entries)} entries written to {output}")
     return 0
 
 

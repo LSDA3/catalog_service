@@ -1,23 +1,26 @@
-# La máquina de ejecución. Sin clave de modelo, sin prompts y sin scripts:
-# el contenedor no puede llamar a un LLM aunque quisiera (A3.7).
+# The execution machine. No model key, no prompts and no scripts: the container
+# cannot call an LLM even if it wanted to (A3.7).
 FROM python:3.12-slim
 
 WORKDIR /app
 
-# Las dependencias primero, para que la capa se reutilice mientras no cambien.
+# Dependencies first, so the layer is reused while they do not change.
+# No `|| true` here on purpose: a real installation failure must break the build.
+# Swallowing it produced an image that started with no dependencies at all and
+# died at run time with an error that never mentioned pip.
 COPY requirements.txt ./
-RUN pip install --no-cache-dir --require-hashes=false -r requirements.txt \
- && pip uninstall -y pytest httpx || true
+RUN pip install --no-cache-dir -r requirements.txt \
+ && pip uninstall -y pytest httpx
 
-# Lo único que entra: el código del servicio y los tres ficheros de datos.
+# The only thing that goes in: the service code and the data files.
 COPY src/ ./src/
 COPY data/ ./data/
 
-# Lo que NO entra, y es una decisión de seguridad, no de tamaño:
-#   prompts/   el criterio de clasificación
-#   scripts/   lo que haría la llamada al modelo
-#   tests/     no hace falta en ejecución
-# Las dos credenciales llegan como variables de entorno desde Fly Secrets:
+# What does NOT go in, and it is a security decision, not a size one:
+#   prompts/   the classification criterion
+#   scripts/   what would make the call to the model
+#   tests/     not needed at run time
+# The two credentials arrive as environment variables from Fly Secrets:
 #   CATALOG_API_KEY  ·  DIAGNOSTICS_API_KEY
 
 EXPOSE 8080

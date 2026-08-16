@@ -408,10 +408,18 @@ FastAPI con las cinco operaciones. **Las descripciones de B7 se escriben literal
 
 ## Fase 5 · Fly · el hito que desbloquea la fase 7
 
-1. `fly launch` con el nombre reservado en 0.3.
-2. **Las dos credenciales a Fly Secrets** — cifradas, inyectadas como variables de entorno en ejecución, **fuera de la imagen y fuera de `fly.toml`**.
-3. Desplegar.
+1. **`fly.toml` se escribe a mano, como parte del proyecto.** **Nunca con `fly launch`**, ni siquiera con opciones que apunten a una app existente: `fly launch` está pensado para crear una aplicación nueva, y aquí la aplicación **ya existe y ya está reservada**. Lo que haría es intentar crear una segunda y reescribir lo que se haya decidido en el fichero.
+2. **Las dos credenciales a Fly Secrets** — cifradas, inyectadas como variables de entorno en ejecución, **fuera de la imagen y fuera de `fly.toml`**. Mientras no exista ninguna Machine quedan en estado `Staged`: es lo normal, y se aplican solas en el primer despliegue.
+3. **Desplegar solo por el pipeline.** No hay `fly deploy` a mano, y no es una preferencia de estilo: un despliegue manual **se salta la puerta de cobertura y las pruebas**, que son lo único que impide publicar un artefacto que clasifica mal. El primer despliegue tiene que ser el que sale de un `Action` en verde.
 4. Comprobar que Fly Proxy termina TLS antes de la aplicación.
+
+**Las tres decisiones de disponibilidad, y por qué.**
+
+| Ajuste | Valor | Por qué |
+|---|---|---|
+| `primary_region` | `fra` | Quien llama no es un navegador, es indigo.ai, cuya arquitectura está alojada en Frankfurt. La región se elige por quien llama |
+| `min_machines_running` · `auto_stop_machines` | `1` · `"stop"` | Una máquina siempre despierta. **El mínimo solo tiene efecto con `stop` o `suspend`**, así que no se pone `auto_stop_machines = "off"`: sería desactivar el mecanismo del que depende el mínimo |
+| Health check HTTP | `GET /openapi.json` | Un puerto abierto solo prueba que algo escucha. Esta ruta prueba que **FastAPI responde**, y es la única que contesta 200 sin credencial. Cualquier otra devolvería 401 al sondeo y Fly daría por muerta una máquina viva |
 
 **Cerrada cuando, contra el host real:**
 

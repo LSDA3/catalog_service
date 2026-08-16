@@ -54,18 +54,18 @@ from models import (
 )
 from repository import InMemoryCatalog
 
-RAIZ = Path(__file__).resolve().parents[1]
-CSV = RAIZ / "data" / "catalog.csv"
-VOCABULARIOS = RAIZ / "data" / "vocabularies.yaml"
-CAPA = RAIZ / "data" / "semantic_layer.json"
+ROOT = Path(__file__).resolve().parents[1]
+CSV = ROOT / "data" / "catalog.csv"
+VOCABULARIES = ROOT / "data" / "vocabularies.yaml"
+SEMANTIC_LAYER = ROOT / "data" / "semantic_layer.json"
 
 # --------------------------------------------------------------------------
 # Start-up · the catalog is loaded once, not on every request
 # --------------------------------------------------------------------------
 
-catalog = InMemoryCatalog(CSV, VOCABULARIOS, CAPA)
-GENDER_SPECIFIC_TYPES = normalization.gender_specific_product_types(VOCABULARIOS)
-VOCABULARY = yaml.safe_load(VOCABULARIOS.read_text(encoding="utf-8"))
+catalog = InMemoryCatalog(CSV, VOCABULARIES, SEMANTIC_LAYER)
+GENDER_SPECIFIC_TYPES = normalization.gender_specific_product_types(VOCABULARIES)
+VOCABULARY = yaml.safe_load(VOCABULARIES.read_text(encoding="utf-8"))
 QUALITY_BY_PRODUCT = {
     p.product_id: catalog.off_contract(p.product_id)["description_quality"]
     for p in catalog.all_products()

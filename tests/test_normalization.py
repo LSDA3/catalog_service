@@ -24,17 +24,17 @@ SEMANTIC_LAYER = ROOT / "data" / "semantic_layer.json"
 
 
 @pytest.fixture(scope="module")
-def tipos() -> dict[str, str]:
-    capa = json.loads(SEMANTIC_LAYER.read_text(encoding="utf-8"))
-    products = capa["products"] if isinstance(capa, dict) and "products" in capa else capa
+def product_types() -> dict[str, str]:
+    layer = json.loads(SEMANTIC_LAYER.read_text(encoding="utf-8"))
+    products = layer["products"] if isinstance(layer, dict) and "products" in layer else layer
     if isinstance(products, list):
         return {p["product_id"]: p["product_type"] for p in products}
     return {key_: value_["product_type"] for key_, value_ in products.items()}
 
 
 @pytest.fixture(scope="module")
-def catalog(tipos):
-    return n.canonicalize(CSV, VOCABULARIES, tipos)
+def catalog(product_types):
+    return n.canonicalize(CSV, VOCABULARIES, product_types)
 
 
 # --------------------------------------------------------------------------
@@ -43,39 +43,39 @@ def catalog(tipos):
 
 
 def test_the_152_rows_give_150_products(catalog):
-    canonicos, _ = catalog
-    assert len(canonicos) == 150
+    canonical, _ = catalog
+    assert len(canonical) == 150
 
 
 def test_the_two_merges_are_the_written_ones(catalog):
-    canonicos, _ = catalog
-    fusionados = {p.product_id: p.alt_product_ids for p in canonicos if p.alt_product_ids}
-    assert fusionados == {"HL-021": ["KD-024"], "HL-024": ["KD-023"]}
+    canonical, _ = catalog
+    merged = {p.product_id: p.alt_product_ids for p in canonical if p.alt_product_ids}
+    assert merged == {"HL-021": ["KD-024"], "HL-024": ["KD-023"]}
 
 
 def test_the_canonical_id_is_the_lexicographically_smaller_one(catalog):
-    canonicos, _ = catalog
-    for product in canonicos:
+    canonical, _ = catalog
+    for product in canonical:
         for absorbido in product.alt_product_ids:
             assert product.product_id < absorbido
 
 
 def test_the_category_of_the_absorbed_one_becomes_secondary(catalog):
-    canonicos, _ = catalog
-    by_id = {p.product_id: p for p in canonicos}
+    canonical, _ = catalog
+    by_id = {p.product_id: p for p in canonical}
     assert by_id["HL-021"].secondary_categories == ["Kitchen & Dining"]
     assert by_id["HL-024"].secondary_categories == ["Kitchen & Dining"]
 
 
 def test_an_absorbed_identifier_resolves_to_the_canonical_one(catalog):
-    canonicos, _ = catalog
-    assert n.resolve_identifier("KD-024", canonicos).product_id == "HL-021"
-    assert n.resolve_identifier("KD-023", canonicos).product_id == "HL-024"
+    canonical, _ = catalog
+    assert n.resolve_identifier("KD-024", canonical).product_id == "HL-021"
+    assert n.resolve_identifier("KD-023", canonical).product_id == "HL-024"
 
 
 def test_an_unknown_identifier_does_not_resolve(catalog):
-    canonicos, _ = catalog
-    assert n.resolve_identifier("KD-999", canonicos) is None
+    canonical, _ = catalog
+    assert n.resolve_identifier("KD-999", canonical) is None
 
 
 # --------------------------------------------------------------------------
@@ -84,13 +84,13 @@ def test_an_unknown_identifier_does_not_resolve(catalog):
 
 
 def test_there_are_139_available(catalog):
-    canonicos, _ = catalog
-    assert sum(1 for p in canonicos if p.in_stock) == 139
+    canonical, _ = catalog
+    assert sum(1 for p in canonical if p.in_stock) == 139
 
 
 def test_the_17_category_values_give_11_categories(catalog):
-    canonicos, _ = catalog
-    assert len({p.category for p in canonicos}) == 11
+    canonical, _ = catalog
+    assert len({p.category for p in canonical}) == 11
 
 
 def test_category_normalization_treats_and_as_ampersand():
@@ -106,13 +106,13 @@ def test_category_normalization_treats_and_as_ampersand():
 
 
 def test_140_products_carry_anyone(catalog):
-    canonicos, _ = catalog
-    assert sum(1 for p in canonicos if "anyone" in p.recipient) == 140
+    canonical, _ = catalog
+    assert sum(1 for p in canonical if "anyone" in p.recipient) == 140
 
 
 def test_the_ten_exclusive_ones_are_the_written_ones(catalog):
-    canonicos, _ = catalog
-    without_anyone = sorted(p.product_id for p in canonicos if "anyone" not in p.recipient)
+    canonical, _ = catalog
+    without_anyone = sorted(p.product_id for p in canonical if "anyone" not in p.recipient)
     assert without_anyone == [
         "BW-004",
         "BW-006",
@@ -128,16 +128,16 @@ def test_the_ten_exclusive_ones_are_the_written_ones(catalog):
 
 
 def test_the_original_value_is_kept(catalog):
-    canonicos, _ = catalog
-    by_id = {p.product_id: p for p in canonicos}
+    canonical, _ = catalog
+    by_id = {p.product_id: p for p in canonical}
     teclado = by_id["TG-012"]
     assert "anyone" in teclado.recipient
     assert "him" in teclado.recipient
 
 
 def test_kids_never_carries_anyone(catalog):
-    canonicos, _ = catalog
-    for product in canonicos:
+    canonical, _ = catalog
+    for product in canonical:
         if "kids" in product.recipient:
             assert product.recipient == ["kids"]
 
@@ -148,20 +148,20 @@ def test_kids_never_carries_anyone(catalog):
 
 
 def test_the_five_missing_ratings_stay_missing(catalog):
-    canonicos, _ = catalog
-    without_rating = [p for p in canonicos if p.rating is None]
+    canonical, _ = catalog
+    without_rating = [p for p in canonical if p.rating is None]
     assert len(without_rating) == 5
     assert all(p.rating != 0 for p in without_rating)
 
 
 def test_the_three_missing_occasions_stay_empty(catalog):
-    canonicos, _ = catalog
-    assert sum(1 for p in canonicos if not p.occasion) == 3
+    canonical, _ = catalog
+    assert sum(1 for p in canonical if not p.occasion) == 3
 
 
 def test_the_two_poor_descriptions_are_the_written_ones(catalog):
-    canonicos, _ = catalog
-    poor_ones = sorted(p.product_id for p in canonicos if p.description_quality == "poor")
+    canonical, _ = catalog
+    poor_ones = sorted(p.product_id for p in canonical if p.description_quality == "poor")
     assert poor_ones == ["BS-015", "HL-013"]
 
 
@@ -213,12 +213,12 @@ def test_unreadable_stock_stops_the_start_up():
 # --------------------------------------------------------------------------
 
 
-def test_two_runs_give_the_same_set_of_identifiers(tipos):
-    first_, _ = n.canonicalize(CSV, VOCABULARIES, tipos)
-    second_, _ = n.canonicalize(CSV, VOCABULARIES, tipos)
+def test_two_runs_give_the_same_set_of_identifiers(product_types):
+    first_, _ = n.canonicalize(CSV, VOCABULARIES, product_types)
+    second_, _ = n.canonicalize(CSV, VOCABULARIES, product_types)
     assert [p.product_id for p in first_] == [p.product_id for p in second_]
 
 
-def test_the_canonical_set_matches_the_semantic_layer(catalog, tipos):
-    canonicos, _ = catalog
-    assert {p.product_id for p in canonicos} == set(tipos)
+def test_the_canonical_set_matches_the_semantic_layer(catalog, product_types):
+    canonical, _ = catalog
+    assert {p.product_id for p in canonical} == set(product_types)
