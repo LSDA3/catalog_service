@@ -42,7 +42,7 @@ CRITERION_FILES = (VOCABULARIES, ENRICH_PROMPT)
 CLOSED_VOCABULARIES = ("use_case", "functional_family", "gift_risk", "suitable_relationships")
 # The fields that may never come back empty. `product_type` is checked apart,
 # because it is the only one that may legitimately not exist yet.
-NEVER_EMPTY = ("functional_family", "use_case", "gift_risk")
+NEVER_EMPTY = ("functional_family", "use_case", "gift_risk", "suitable_relationships")
 OWN_FIELDS = (
     "product_type",
     "functional_family",
@@ -196,6 +196,12 @@ def problems_with(own: dict, proposal: dict | None, vocabulary: dict) -> list[st
         if not own.get(field):
             complaints.append(f"`{field}` came back empty, and it may never be empty.")
 
+    for field in ("is_standalone_gift", "stocking_filler"):
+        if field not in own:
+            complaints.append(f"`{field}` is missing.")
+        elif not isinstance(own[field], bool):
+            complaints.append(f"`{field}` must be a boolean.")
+
     kind = own.get("product_type")
     if not kind:
         complaints.append("`product_type` came back empty.")
@@ -207,6 +213,18 @@ def problems_with(own: dict, proposal: dict | None, vocabulary: dict) -> list[st
                 f"`new_product_type` with `key` exactly `{kind}`, its definition and "
                 "its aliases. It is not used without declaring it."
             )
+
+    if proposal:
+        if proposal.get("key") != kind:
+            complaints.append(
+                "`new_product_type.key` must be exactly the `product_type` used by this product."
+            )
+        if kind in vocabulary.get("product_type", {}):
+            complaints.append(
+                "`new_product_type` must not be returned when `product_type` already exists."
+            )
+        if not proposal.get("definicion"):
+            complaints.append("`new_product_type.definicion` may not be empty.")
 
     return complaints
 
