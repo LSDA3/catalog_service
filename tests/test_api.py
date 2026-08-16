@@ -174,11 +174,61 @@ def test_the_search_does_not_paginate_and_may_carry_not_applied(client_):
         {"parameter": "product_type", "received": "santoku", "reason": "unresolved"}
     ]
 
+    body = with_catalog(client_, "/find_products_by_criteria", material="mahogany").json()
+    assert body["not_applied"] == [
+        {"parameter": "material", "received": "mahogany", "reason": "unresolved"}
+    ]
+    assert "material" not in body["query_understood"]
+    assert body["results"]
+
 
 def test_the_alias_gyuto_resolves_to_chef_knife(client_):
+    import api
+
     body = with_catalog(client_, "/find_products_by_criteria", product_type="gyuto").json()
     assert body["query_understood"]["product_type"] == "chef_knife"
     assert "not_applied" not in body
+
+    body = with_catalog(client_, "/find_products_by_criteria", material="wood").json()
+    assert body["results"]
+    assert body["query_understood"]["material"] == "wood"
+    assert all(
+        product["material"] in set(api.VOCABULARY["material"]["wood"]["cubre"])
+        for product in body["results"]
+    )
+    assert len({product["material"] for product in body["results"]}) > 1
+    assert "not_applied" not in body
+
+    body = with_catalog(client_, "/find_products_by_criteria", material="ceramic").json()
+    assert body["results"]
+    assert body["query_understood"]["material"] == "ceramic"
+    assert all(
+        product["material"] in set(api.VOCABULARY["material"]["ceramic"]["cubre"])
+        for product in body["results"]
+    )
+    assert any(product["material"] != "Ceramic" for product in body["results"])
+
+    body = with_catalog(client_, "/find_products_by_criteria", color="navy").json()
+    assert body["results"]
+    assert body["query_understood"]["color"] == "navy"
+    assert all(product["color"] == "Navy" for product in body["results"])
+
+    body = with_catalog(client_, "/find_products_by_criteria", color="blue").json()
+    assert body["results"]
+    assert body["query_understood"]["color"] == "blue"
+    assert all(
+        product["color"] in set(api.VOCABULARY["color"]["blue"]["cubre"])
+        for product in body["results"]
+    )
+    assert len({product["color"] for product in body["results"]}) > 1
+
+    for field in ("color", "material"):
+        for definition in api.VOCABULARY[field].values():
+            assert set(definition["cubre"]) <= {
+                getattr(product, field)
+                for product in api.catalog.all_products()
+                if getattr(product, field) is not None
+            }
 
 
 def test_the_knife_scenario_through_the_api(client_):
