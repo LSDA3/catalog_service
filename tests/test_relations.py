@@ -225,18 +225,20 @@ def test_a_product_with_no_relations_gets_two_empty_lists():
 
 
 # --------------------------------------------------------------------------
-# B0.5 · what the service derives at run time is not persisted
+# B0.5 · derived `same_function` is not persisted as the same fact again
 # --------------------------------------------------------------------------
 
 
 def test_no_persisted_same_function_joins_two_products_of_the_same_type(entries):
-    """A shared product_type already gives the pair at runtime, so it is never persisted."""
+    """Shared product_type already yields same_function at runtime."""
     for product_id, entry in entries.items():
         for link in entry.get("alternative_to") or []:
+            if link["relation_type"] != "same_function":
+                continue
             other = link["product_id"]
             assert entries[product_id]["product_type"] != entries[other]["product_type"], (
-                f"{product_id} · {other}: persisted while sharing product_type, "
-                "which the service already derives"
+                f"{product_id} · {other}: same_function persisted while sharing "
+                "product_type, which runtime already derives"
             )
 
     with pytest.raises(relate.InvalidRelations, match="already derived"):
@@ -254,19 +256,35 @@ def test_no_persisted_same_function_joins_two_products_of_the_same_type(entries)
         )
 
 
+def test_shared_product_type_does_not_block_an_explicit_equivalent():
+    """Runtime would derive same_function, so equivalent still adds information."""
+    result = relate.normalize_relations(
+        {
+            "HL-009": {
+                "pairs_with": [],
+                "alternative_to": [
+                    {"product_id": "HL-010", "relation_type": "equivalent"}
+                ],
+            }
+        },
+        CANONICAL,
+        {"HL-009": "throw", "HL-010": "throw"},
+    )
+    assert result["HL-009"]["alternative_to"] == [
+        {"product_id": "HL-010", "relation_type": "equivalent"}
+    ]
+
+
 # --------------------------------------------------------------------------
 # Acceptance · facts the current catalog states unambiguously
 # --------------------------------------------------------------------------
 
 
-def test_only_hl_009_and_hl_010_are_equivalent(entries):
-    equivalent = [
-        (product_id, link["product_id"])
-        for product_id, entry in sorted(entries.items())
-        for link in entry.get("alternative_to") or []
-        if link["relation_type"] == "equivalent"
-    ]
-    assert equivalent == [("HL-009", "HL-010")]
+def test_catalog_declared_equivalent_is_preserved(entries):
+    assert {
+        "product_id": "HL-010",
+        "relation_type": "equivalent",
+    } in entries["HL-009"]["alternative_to"]
 
 
 def test_catalog_declared_pairs_with_are_preserved(entries):
