@@ -45,13 +45,24 @@ uso concreta entre ese accesorio o complemento y ese producto principal.
 
 ## `alternative_to` — la relación de sustitución
 
-Dos productos son alternativa persistida cuando **uno puede ocupar el lugar del
-otro ante la misma necesidad y esa pareja concreta aporta información que el
-servicio no deriva ya por sí mismo**. Cada relación declara su naturaleza:
+Antes de interpretar ninguna frase de las descripciones, haz esta comprobación:
+
+**si los dos productos tienen el mismo `product_type`, NO devuelvas
+`alternative_to` entre ellos, con ninguna etiqueta.**
+
+Esta regla tiene prioridad absoluta sobre el texto. Expresiones como "sibling",
+"version", "lighter", "easier", "harder" o cualquier otra formulación que
+relacione dos productos **no anulan la regla**: si comparten `product_type`, el
+servicio ya los relaciona en ejecución y esa arista no se persiste.
+
+Solo después de superar esa comprobación decides si existe una relación
+persistida. Dos productos son alternativa persistida cuando **uno puede ocupar el
+lugar del otro ante la misma necesidad y esa pareja concreta aporta información
+que el servicio no deriva ya por sí mismo**. Cada relación declara su naturaleza:
 
 | `relation_type` | Significa | Cuándo |
 |---|---|---|
-| `equivalent` | Versiones del mismo objeto o concepto comercial | **Solo con evidencia suficiente en el catálogo.** No basta con compartir `product_type`, ni `functional_family`, ni servir para lo mismo |
+| `equivalent` | Versiones del mismo objeto o concepto comercial | **Solo con evidencia suficiente en el catálogo.** No basta con compartir `functional_family`, ni servir para lo mismo |
 | `same_function` | Otro objeto distinto que sustituye a este | Cuando el catálogo sostiene esa sustitución concreta, sin evidencia suficiente para afirmar que sean versiones del mismo objeto |
 
 **Ante la duda entre las dos etiquetas, `same_function`.** Pero eso es elegir
@@ -60,8 +71,6 @@ para escribir la relación: ante la duda de si la relación existe, **no se
 escribe**.
 
 ## Lo que el servicio deriva solo, y por eso no se escribe
-
-Esta regla se aplica antes de decidir si una `alternative_to` se persiste.
 
 El servicio ya relaciona en ejecución, sin que aquí se escriba nada:
 
@@ -76,8 +85,8 @@ de `food_preparation`.
 
 Por tanto:
 
-- **dos productos del mismo `product_type` no se escriben en `alternative_to`**:
-  esa sustitución ya la deriva el servicio;
+- **dos productos del mismo `product_type` no se escriben en `alternative_to`**,
+  aunque una descripción los relacione explícitamente;
 - compartir `functional_family` **no es motivo suficiente** para escribir una
   `alternative_to`: la familia da el conjunto de sustitución, no el vecino
   exacto;
