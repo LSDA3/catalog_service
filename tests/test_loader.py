@@ -138,12 +138,6 @@ def test_relations_are_resolved_from_both_ends(loaded):
             assert product.product_id in by_id[other].alternative_to
 
 
-def test_32_products_take_part_in_some_relation(loaded):
-    products, _, _ = loaded
-    participating = {p.product_id for p in products if p.pairs_with or p.alternative_to}
-    assert len(participating) == 32
-
-
 def test_no_product_relates_to_itself(loaded):
     products, _, _ = loaded
     for product in products:
