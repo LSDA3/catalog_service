@@ -426,3 +426,18 @@ def test_related_products_do_not_exceed_the_limit(catalog, gender_specific_types
     )
     assert chosen
     assert all("gift_card" in p.functional_family for p in chosen)
+
+    # Without a source product, the accumulated semantic intention is still a
+    # valid way to compare alternatives. It does not create a post-family `rest`:
+    # the existing precedence compares the supplied categories over the catalog.
+    chosen = selection.related_products(
+        catalog.all_products(),
+        "alternative_to",
+        None,
+        {"use_case": ["cooking"]},
+        5,
+        gender_specific_types,
+        quality,
+    )
+    assert chosen
+    assert all("cooking" in p.use_case for p in chosen)
