@@ -52,6 +52,7 @@ def _card(product: normalization.CanonicalProduct, entry: dict) -> dict:
     return {
         "product_id": product.product_id,
         "name": product.name,
+        "subcategory": product.subcategory,
         "product_type": entry.get("product_type"),
         "functional_family": entry.get("functional_family"),
         "price_eur": product.price,
@@ -81,6 +82,7 @@ def request_relations(
         response = client_.messages.create(
             model=os.environ.get("RELATE_MODEL", "claude-sonnet-4-5"),
             max_tokens=8192,
+            temperature=0,
             system=prompt,
             messages=messages,
         )
