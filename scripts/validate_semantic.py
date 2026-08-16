@@ -184,6 +184,14 @@ def validate(csv_path: Path, semantic_layer_path: Path, vocabularies_path: Path)
             failures.append(f"{product_id}: empty gift_risk")
         if not entry.get("suitable_relationships"):
             failures.append(f"{product_id}: empty suitable_relationships")
+        if (
+            isinstance(entry.get("suitable_relationships"), list)
+            and len(entry["suitable_relationships"]) > 5
+        ):
+            failures.append(
+                f"{product_id}: suitable_relationships has "
+                f"{len(entry['suitable_relationships'])} values; maximum is 5"
+            )
         for field in ("is_standalone_gift", "stocking_filler"):
             if field in entry and not isinstance(entry[field], bool):
                 failures.append(f"{product_id}: {field} is not boolean")
