@@ -63,14 +63,15 @@ def _at_previous_revision(path_in_repo: str) -> str | None:
     return output.stdout
 
 
-def _growth_is_justified(vocabulary: dict, identifiers: set[str]) -> list[str]:
+def _growth_is_justified(
+    vocabulary: dict, identifiers: set[str], used_types: set[str | None]
+) -> list[str]:
     """No commit may add more product types than it adds canonical products.
 
     By construction each new product introduces at most one new type, so more new
     types than new products means the classifier is inventing rather than the
-    catalog growing. It is the only thing about this that can be decided
-    deterministically: whether two names mean the same thing cannot, and that
-    protection belongs to the classifier's criterion.
+    catalog growing. A newly registered type must also actually be used by the
+    resulting semantic layer: otherwise it was only proposed, not justified.
     """
     import json
 
@@ -90,13 +91,20 @@ def _growth_is_justified(vocabulary: dict, identifiers: set[str]) -> list[str]:
     )
     new_products = identifiers - before_products
 
+    failures: list[str] = []
     if len(new_types) > len(new_products):
-        return [
+        failures.append(
             f"{len(new_types)} new product_type for {len(new_products)} new products: "
             f"{sorted(new_types)}. Each new product introduces at most one type, so "
             "this is invention, not growth"
-        ]
-    return []
+        )
+
+    unused = new_types - used_types
+    if unused:
+        failures.append(
+            f"new product_type registered but not used by any product: {sorted(unused)}"
+        )
+    return failures
 
 
 def validate(csv_path: Path, semantic_layer_path: Path, vocabularies_path: Path) -> list[str]:
@@ -138,6 +146,18 @@ def validate(csv_path: Path, semantic_layer_path: Path, vocabularies_path: Path)
         failures.append(f"orphan entries, with no canonical product: {orphans}")
 
     for product_id, entry in sorted(entries.items()):
+        for field in (
+            "product_type",
+            "functional_family",
+            "use_case",
+            "gift_risk",
+            "suitable_relationships",
+            "is_standalone_gift",
+            "stocking_filler",
+        ):
+            if field not in entry:
+                failures.append(f"{product_id}: missing {field}")
+
         for field in CLOSED_VOCABULARIES:
             if field not in entry:
                 continue
@@ -160,6 +180,13 @@ def validate(csv_path: Path, semantic_layer_path: Path, vocabularies_path: Path)
             failures.append(f"{product_id}: empty use_case")
         if not entry.get("functional_family"):
             failures.append(f"{product_id}: empty functional_family")
+        if not entry.get("gift_risk"):
+            failures.append(f"{product_id}: empty gift_risk")
+        if not entry.get("suitable_relationships"):
+            failures.append(f"{product_id}: empty suitable_relationships")
+        for field in ("is_standalone_gift", "stocking_filler"):
+            if field in entry and not isinstance(entry[field], bool):
+                failures.append(f"{product_id}: {field} is not boolean")
 
     # An alias cannot resolve to two different types: it would be an ambiguity
     # the service cannot undo when reading a query.
@@ -174,15 +201,35 @@ def validate(csv_path: Path, semantic_layer_path: Path, vocabularies_path: Path)
             owners[key_] = kind_
         if not (definition.get("definicion") if isinstance(definition, dict) else None):
             failures.append(f"product_type {kind_!r} without a definition")
+        if (
+            isinstance(definition, dict)
+            and "gender_specific" in definition
+            and definition.get("gender_specific") not in {"male", "female"}
+        ):
+            failures.append(
+                f"product_type {kind_!r} has invalid gender_specific "
+                f"{definition.get('gender_specific')!r}"
+            )
 
-    pairs_seen: set[tuple[str, str]] = set()
+    pairs_seen: set[tuple[str, str, str]] = set()
     for product_id, entry in sorted(entries.items()):
         for link in entry.get("pairs_with") or []:
-            other = link["product_id"] if isinstance(link, dict) else link
+            if isinstance(link, dict):
+                if "product_id" not in link:
+                    failures.append(f"{product_id}: pairs_with without product_id")
+                    continue
+                other = link["product_id"]
+            else:
+                other = link
             if other not in identifiers:
                 failures.append(f"{product_id}: pairs_with points at {other}, which is not canonical")
             if other == product_id:
                 failures.append(f"{product_id}: pairs_with points at itself")
+            pair = tuple(sorted((product_id, other)))
+            persisted = ("pairs_with", pair[0], pair[1])
+            if persisted in pairs_seen:
+                failures.append(f"{pair[0]} · {pair[1]}: pairs_with is persisted twice")
+            pairs_seen.add(persisted)
 
         for link in entry.get("alternative_to") or []:
             if not isinstance(link, dict) or "product_id" not in link:
@@ -200,18 +247,28 @@ def validate(csv_path: Path, semantic_layer_path: Path, vocabularies_path: Path)
                     f"{product_id} → {other}: relation_type "
                     f"{link.get('relation_type')!r} is not valid"
                 )
+            if (
+                other in product_types_by_id
+                and link.get("relation_type") == "same_function"
+                and product_types_by_id.get(product_id) == product_types_by_id.get(other)
+            ):
+                failures.append(
+                    f"{product_id} · {other}: same_function is already derived from shared "
+                    f"product_type {product_types_by_id.get(product_id)!r} and must not be persisted"
+                )
             pair = tuple(sorted((product_id, other)))
-            if pair in pairs_seen:
+            persisted = ("alternative_to", pair[0], pair[1])
+            if persisted in pairs_seen:
                 failures.append(f"{pair[0]} · {pair[1]}: the pair is persisted twice")
-            pairs_seen.add(pair)
+            pairs_seen.add(persisted)
             if product_id != pair[0]:
                 failures.append(
                     f"{pair[0]} · {pair[1]}: persisted under the larger identifier"
                 )
 
-    failures.extend(_growth_is_justified(vocabulary, identifiers))
-
     used_types = {entry.get("product_type") for entry in entries.values()}
+    failures.extend(_growth_is_justified(vocabulary, identifiers, used_types))
+
     disappeared = used_types - set(vocabulary.get("product_type", {})) - {None}
     if disappeared:
         failures.append(
