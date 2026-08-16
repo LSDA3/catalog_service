@@ -191,6 +191,13 @@ def test_the_knife_scenario_through_the_api(client_):
     assert body["excluded"][0]["actual"] == 149.0
     assert body["excluded"][0]["required"] == 100
 
+    body = with_catalog(
+        client_, "/find_products_by_criteria", product_type="retro_console"
+    ).json()
+    assert body["results"] == []
+    assert body["excluded"][0]["product_id"] == "TG-022"
+    assert body["excluded"][0]["exclusion_reason"] == "out_of_stock"
+
 
 def test_the_detail_returns_result_and_not_a_list(client_):
     body = with_catalog(client_, "/get_product_details", product_id="KD-001").json()
