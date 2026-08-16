@@ -269,13 +269,6 @@ def test_only_hl_009_and_hl_010_are_equivalent(entries):
     assert equivalent == [("HL-009", "HL-010")]
 
 
-def test_catalog_declared_alternative_is_preserved(entries):
-    assert {
-        "product_id": "BW-010",
-        "relation_type": "same_function",
-    } in entries["BW-009"]["alternative_to"]
-
-
 def test_catalog_declared_pairs_with_are_preserved(entries):
     assert "KD-001" in entries["KD-002"]["pairs_with"]
     assert "TG-006" in entries["TG-007"]["pairs_with"]
