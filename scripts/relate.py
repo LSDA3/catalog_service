@@ -20,9 +20,9 @@ Making the other end aware of either is the loader's job.
 **Nothing invalid is quietly turned into something valid here.** A reference to a
 product that does not exist, a product related to itself, a `relation_type`
 outside the vocabulary, an `alternative_to` already derived by shared
-`product_type`, or the same pair arriving twice with different natures stop the
-build. Repairing them here would hide from `validate_semantic.py` exactly what it
-exists to catch.
+`product_type`, or the same pair arriving twice with different natures is rejected.
+As in `enrich.py`, the model gets a limited chance to correct a rejected answer;
+if it keeps breaking a deterministic rule, the build stops without writing.
 
 This script **does not travel to the container**.
 """
@@ -40,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import normalization  # noqa: E402
 
 RELATION_TYPE = {"equivalent", "same_function"}
+ATTEMPTS = 3
 
 
 class InvalidRelations(RuntimeError):
@@ -58,19 +59,57 @@ def _card(product: normalization.CanonicalProduct, entry: dict) -> dict:
     }
 
 
-def request_relations(catalog: list[dict], prompt: str) -> dict:
+def request_relations(
+    catalog: list[dict],
+    prompt: str,
+    canonical: set[str],
+    product_types_by_id: dict[str, str | None],
+) -> dict:
+    """Ask for the whole relation mesh and accept only an admissible answer.
+
+    The semantic decision stays with the model, but deterministic violations do
+    not become data. A rejected answer is returned to the same conversation with
+    the exact validation error, following the same bounded correction pattern as
+    `enrich.py`. After `ATTEMPTS` tries, the run stops and nothing is written.
+    """
     from anthropic import Anthropic
 
     client_ = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    response = client_.messages.create(
-        model=os.environ.get("RELATE_MODEL", "claude-sonnet-4-5"),
-        max_tokens=8192,
-        system=prompt,
-        messages=[{"role": "user", "content": json.dumps(catalog, ensure_ascii=False)}],
-    )
-    text_ = "".join(block.text for block in response.content if block.type == "text")
-    start_, end_ = text_.find("{"), text_.rfind("}")
-    return json.loads(text_[start_ : end_ + 1])
+    messages = [{"role": "user", "content": json.dumps(catalog, ensure_ascii=False)}]
+
+    for attempt in range(1, ATTEMPTS + 1):
+        response = client_.messages.create(
+            model=os.environ.get("RELATE_MODEL", "claude-sonnet-4-5"),
+            max_tokens=8192,
+            system=prompt,
+            messages=messages,
+        )
+        text_ = "".join(block.text for block in response.content if block.type == "text")
+        start_, end_ = text_.find("{"), text_.rfind("}")
+        proposals = json.loads(text_[start_ : end_ + 1])
+
+        try:
+            normalize_relations(proposals, canonical, product_types_by_id)
+            return proposals
+        except InvalidRelations as refused:
+            print(f"      attempt {attempt}: {refused}")
+            if attempt == ATTEMPTS:
+                raise
+            messages.append({"role": "assistant", "content": text_})
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "That answer is not admissible:\n"
+                        f"{refused}\n\n"
+                        "Return the whole JSON again, corrected. Keep every valid relation "
+                        "you already found, remove or correct only what violates the stated "
+                        "rules, review the whole catalog again, and do not explain anything."
+                    ),
+                }
+            )
+
+    raise InvalidRelations("the relation answer stayed invalid")
 
 
 def normalize_relations(
@@ -90,12 +129,12 @@ def normalize_relations(
       the pair, which is where A4.8 says it lives. Choosing the smaller of two
       identifiers decides nothing about meaning.
 
-    **Everything else is an error and stops the build.** This function does not
-    repair the model: it does not drop a reference to a product that does not
-    exist, does not silently swallow a product related to itself, does not turn
-    an invalid `relation_type` into `same_function`, and does not persist an
-    `alternative_to` between products whose shared `product_type` already gives
-    the service that relation at run time.
+    **Everything else is an error.** This function does not repair the model: it
+    does not drop a reference to a product that does not exist, does not silently
+    swallow a product related to itself, does not turn an invalid `relation_type`
+    into `same_function`, and does not persist an `alternative_to` between
+    products whose shared `product_type` already gives the service that relation
+    at run time.
     """
     problems: list[str] = []
     # The unordered pair → which product holds the `pairs_with` write, so a
@@ -130,8 +169,6 @@ def normalize_relations(
                 complement_holder[pair] = product_id
                 complements.setdefault(product_id, []).append(other)
             elif holder != product_id:
-                # Both directions arrived. Which of the two is the accessory is
-                # the whole content of the field, and it cannot be decided here.
                 problems.append(
                     f"{pair[0]} · {pair[1]}: pairs_with arrives in both directions, so "
                     "which one is the accessory is undecided. It is stored once, from "
@@ -174,8 +211,6 @@ def normalize_relations(
             if previous is None:
                 alternatives[pair] = kind
             elif previous != kind:
-                # Downgrading to the safe label would be deciding the nature of
-                # the relation, which is a reading of the catalog, not a shape.
                 problems.append(
                     f"{pair[0]} · {pair[1]}: arrives as {previous!r} and as {kind!r}. "
                     "The nature of a relation is read once, in construction, and it "
@@ -217,20 +252,24 @@ def main() -> int:
     canonical, _ = normalization.canonicalize(
         options.csv, options.vocabularies, product_types_by_id
     )
+    canonical_ids = {p.product_id for p in canonical}
 
     catalog = [_card(p, entries.get(p.product_id, {})) for p in canonical]
     prompt = Path(options.prompt).read_text(encoding="utf-8")
-    proposals = request_relations(catalog, prompt)
 
     try:
+        proposals = request_relations(
+            catalog,
+            prompt,
+            canonical_ids,
+            product_types_by_id,
+        )
         relations = normalize_relations(
             proposals,
-            {p.product_id for p in canonical},
+            canonical_ids,
             product_types_by_id,
         )
     except InvalidRelations as refused:
-        # Nothing is written. A half-repaired mesh is worse than none, because
-        # it passes the gate and relates badly.
         print("\nThe proposed relations do NOT pass. Nothing is written.\n")
         print(f"  {refused}")
         return 1
