@@ -420,6 +420,8 @@ FastAPI con las cinco operaciones. **Las descripciones de B7 se escriben literal
 | `primary_region` | `fra` | Quien llama no es un navegador, es indigo.ai, cuya arquitectura está alojada en Frankfurt. La región se elige por quien llama |
 | `min_machines_running` · `auto_stop_machines` | `1` · `"stop"` | Una máquina siempre despierta. **El mínimo solo tiene efecto con `stop` o `suspend`**, así que no se pone `auto_stop_machines = "off"`: sería desactivar el mecanismo del que depende el mínimo |
 | Health check HTTP | `GET /openapi.json` | Un puerto abierto solo prueba que algo escucha. Esta ruta prueba que **FastAPI responde**, y es la única que contesta 200 sin credencial. Cualquier otra devolvería 401 al sondeo y Fly daría por muerta una máquina viva |
+| Cabecera del check | `X-Forwarded-Proto: https` | Con `force_https = true` un check en HTTP plano puede recibir un **301** a la dirección HTTPS, y **un health check no sigue redirects**: lee el 301, no ve un 200 y da por muerta una máquina sana. La cabecera dice que la petición ya llegó cifrada, así que no hay nada que redirigir |
+| Número de Machines | `flyctl deploy --remote-only --ha=false` | El primer despliegue de una app HTTP crea **dos** Machines por defecto. Aquí tienen que ser **una**, y no por coste: el límite de peticiones de B6.8 es una **ventana deslizante en la memoria del proceso**, así que dos Machines llevarían dos contadores independientes y el límite real sería **el doble del declarado** sin que nada lo delatara. El flag cambia cuántas Machines corre la app, no qué app se despliega |
 
 **Cerrada cuando, contra el host real:**
 
