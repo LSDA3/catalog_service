@@ -1,0 +1,108 @@
+name: Build the catalog and deploy
+
+# The usual trigger is a new catalog, but it is not the only one: changing the
+# vocabulary or the classification prompt also forces a rebuild, even when there
+# is not a single new product (A3.6).
+on:
+  push:
+    branches: [main]
+    paths:
+      - "data/**"
+      - "prompts/**"
+      - "scripts/**"
+      - "src/**"
+      - "tests/**"
+      - "requirements.txt"
+      - "Dockerfile"
+      - ".github/workflows/deploy.yml"
+  pull_request:
+    paths:
+      - "data/**"
+      - "prompts/**"
+      - "scripts/**"
+      - "src/**"
+      - "tests/**"
+
+# The pipeline writes `semantic_layer.json` and may register a new
+# `product_type` in `vocabularies.yaml`, so it needs to push to the branch.
+# The default token is read-only in restricted repositories; this raises it for
+# this job only, and to nothing else.
+permissions:
+  contents: write
+
+# Two runs on the same branch would push over each other. They queue instead of
+# cancelling: a half-finished run must not leave the artifact written and the
+# vocabulary unwritten.
+concurrency:
+  group: build-catalog-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Two commits, because `enrich.py` needs to compare this vocabulary
+          # against the previous one to tell a new `product_type` from a change
+          # of criterion, and `validate_semantic.py` needs it for the growth
+          # invariant. With no history both fall back to the safe side.
+          fetch-depth: 2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        # `anthropic` is installed only here, on the construction machine. It is
+        # deliberately absent from requirements.txt: if it were there it would
+        # travel inside the image, and the container would have something at hand
+        # to call a model with (A3.7).
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install anthropic
+
+      - name: Classify the own fields of the new products, or of all of them if vocabularies.yaml or enrich.md changed the criterion
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python scripts/enrich.py --csv data/catalog.csv --out data/semantic_layer.json
+
+      - name: Recompute the relations over the whole catalog
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python scripts/relate.py --csv data/catalog.csv --semantic data/semantic_layer.json
+
+      - name: Coverage gate
+        # Exits with an error code if the two sets of identifiers are not equal,
+        # if the vocabulary version is not the expected one, if a value falls
+        # outside a closed vocabulary, if a use_case or functional_family is
+        # empty, if a relation is not sound, or if more product types appeared
+        # than new products. An error code means nothing is deployed.
+        run: python scripts/validate_semantic.py --csv data/catalog.csv --semantic data/semantic_layer.json
+
+      - name: Tests
+        run: python -m pytest tests -q
+
+      - name: Commit the recomputed catalog
+        # Both files, always: `enrich.py` may have registered a new
+        # `product_type` in the vocabulary, and an artifact that references a
+        # type the vocabulary does not carry closes the gate on the next run.
+        # A push made with GITHUB_TOKEN does not trigger this workflow again, so
+        # this cannot loop.
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Recompute the semantic layer"
+          file_pattern: data/semantic_layer.json data/vocabularies.yaml
+
+      - name: Set up flyctl
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy to Fly
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: flyctl deploy --remote-only

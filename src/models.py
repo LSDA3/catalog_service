@@ -9,21 +9,59 @@ not use, and the agent would have to guess which ones really travel.
 schema name in the specification, so indigo.ai reads it: a different name here
 would make the contract talk about something that is not in the memory.
 
-Plain dataclasses are used, so these shapes can be loaded and checked without
-starting the service.
+The closed vocabularies travel as real `enum` values, built from
+`vocabularies.yaml`, because B7.10 requires the specification to carry the same
+values and the same definitions the classifier read. `product_type` is the only
+exception: 145 values do not fit in a usable `enum`, so it is free text resolved
+by aliases.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import enum
+from pathlib import Path
+
+import yaml
+from pydantic import BaseModel, Field
+
+VOCABULARIES = Path(__file__).resolve().parents[1] / "data" / "vocabularies.yaml"
+_VOCABULARY = yaml.safe_load(VOCABULARIES.read_text(encoding="utf-8"))
+
+
+def _enum_of(field: str, class_name: str) -> type[enum.Enum]:
+    """Build the `enum` of a closed vocabulary from its single source.
+
+    The specification does not keep copies of values, definitions or aliases: a
+    vocabulary change reaches the contract from the same file the rest of the
+    system reads (B7.10).
+    """
+    return enum.Enum(class_name, {key: key for key in sorted(_VOCABULARY[field])}, type=str)
+
+
+def definitions_of(field: str) -> str:
+    """The `definicion` of every value, as the description of the `enum`.
+
+    The classifier labelled the catalog reading these sentences; if the agent
+    reads different ones, the two speak similar languages and neither notices.
+    """
+    lines = []
+    for key, definition in _VOCABULARY[field].items():
+        text = definition.get("definicion", "") if isinstance(definition, dict) else ""
+        lines.append(f"`{key}`: {text}".strip())
+    return "\n".join(lines)
+
+
+UseCase = _enum_of("use_case", "UseCase")
+FunctionalFamily = _enum_of("functional_family", "FunctionalFamily")
+GiftRisk = _enum_of("gift_risk", "GiftRisk")
+SuitableRelationship = _enum_of("suitable_relationships", "SuitableRelationship")
 
 # --------------------------------------------------------------------------
 # B4.3 · Product, 26 fields
 # --------------------------------------------------------------------------
 
 
-@dataclass
-class Product:
+class Product(BaseModel):
     """The single shape of the four operations that return merchandise.
 
     The 26 fields and not one more: `description_quality`, `tags` and `stock`
@@ -44,27 +82,61 @@ class Product:
     brand: str
     color: str
     material: str
-    in_stock: bool
-    is_standalone_gift: bool
+    in_stock: bool = Field(
+        description=(
+            "Real availability. Discovery and browsing never return unavailable "
+            "products; a direct lookup of a specifically requested product may "
+            "return `false`."
+        )
+    )
+    is_standalone_gift: bool = Field(
+        description=(
+            "Whether the product can serve as the main gift rather than only as an "
+            "accessory or complement."
+        )
+    )
 
     # Classification
     category: str
     secondary_categories: list[str]
     subcategory: str
     product_type: str
-    functional_family: list[str]
-    use_case: list[str]
+    functional_family: list[FunctionalFamily]
+    use_case: list[UseCase]
     occasion: list[str]
     recipient: list[str]
-    suitable_relationships: list[str]
-    gift_risk: str
+    suitable_relationships: list[SuitableRelationship]
+    gift_risk: GiftRisk = Field(
+        description=(
+            "How well the recipient's taste must be known to recommend this product "
+            "confidently. Use it to shape the wording of the recommendation and to "
+            "warn when appropriate. It is not a quality score."
+        )
+    )
     rating: float | None
     reviews_count: int | None
 
     # Commercial relations
-    stocking_filler: bool
-    pairs_with: list[str]
-    alternative_to: list[str]
+    stocking_filler: bool = Field(
+        description=(
+            "Whether the product qualifies as a small standalone additional gift "
+            "under the catalog's definition."
+        )
+    )
+    pairs_with: list[str] = Field(
+        description=(
+            "Identifiers of products explicitly related as complements. Their "
+            "presence means the relationship exists; call `get_related_products` to "
+            "retrieve the products themselves."
+        )
+    )
+    alternative_to: list[str] = Field(
+        description=(
+            "Identifiers of products with an explicitly declared alternative "
+            "relationship. Broader same-function alternatives are resolved by "
+            "`get_related_products`, not listed here."
+        )
+    )
 
 
 PRODUCT_FIELDS = (
@@ -104,8 +176,7 @@ OFF_CONTRACT_FIELDS = ("description_quality", "tags", "stock", "alt_product_ids"
 # --------------------------------------------------------------------------
 
 
-@dataclass
-class ExcludedProduct:
+class ExcludedProduct(BaseModel):
     """A relevant candidate that a boundary of the query left out.
 
     It carries no categories and no description on purpose: a product in
@@ -116,9 +187,22 @@ class ExcludedProduct:
     product_id: str
     name: str
     price: float | None
-    exclusion_reason: str
-    actual: float | int | None = None
-    required: float | int | None = None
+    exclusion_reason: str = Field(
+        description=(
+            "The boundary that prevented this product from entering `results`. Always "
+            "present on every excluded product."
+        )
+    )
+    actual: float | int | None = Field(
+        default=None,
+        description=(
+            "The product's real value, when the boundary is comparable — for example "
+            "a price of 149 against a maximum of 100."
+        ),
+    )
+    required: float | int | None = Field(
+        default=None, description="The value the query demanded, when the boundary is comparable."
+    )
 
 
 # --------------------------------------------------------------------------
@@ -126,8 +210,7 @@ class ExcludedProduct:
 # --------------------------------------------------------------------------
 
 
-@dataclass
-class CategorySummary:
+class CategorySummary(BaseModel):
     """The current state of a category, not just its name.
 
     A category with zero available products still appears, with its zero: the
@@ -145,8 +228,7 @@ class CategorySummary:
 # --------------------------------------------------------------------------
 
 
-@dataclass
-class NotApplied:
+class NotApplied(BaseModel):
     """A criterion that arrived and could not be applied.
 
     It is to criteria what `ExcludedProduct` is to products: without it, the
@@ -159,26 +241,40 @@ class NotApplied:
     reason: str
 
 
-@dataclass
-class GetCategoriesResponse:
+class GetCategoriesResponse(BaseModel):
     """`get_categories`. No metadata of its own."""
 
     results: list[CategorySummary]
     currency: str = "EUR"
 
 
-@dataclass
-class GetProductsByCategoryResponse:
+class GetProductsByCategoryResponse(BaseModel):
     """`get_products_by_category`. The only paginated one: `total` and `offset`."""
 
-    results: list[Product]
-    total: int
-    offset: int
+    results: list[Product] = Field(
+        description=(
+            "Products that satisfy every hard boundary applied to the query, ordered "
+            "from most to least relevant. Array order is the entire result of the "
+            "ordering; no numeric product score exists."
+        )
+    )
+    total: int = Field(
+        description=(
+            "Number of products in the browsed category that match every boundary "
+            "applied in this call, before `limit` and `offset`. Together with "
+            "`offset` it tells you whether more pages remain of that same set."
+        )
+    )
+    offset: int = Field(
+        description=(
+            "Position from which the current page was taken. Add the page size to "
+            "continue through the same category."
+        )
+    )
     currency: str = "EUR"
 
 
-@dataclass
-class FindProductsByCriteriaResponse:
+class FindProductsByCriteriaResponse(BaseModel):
     """`find_products_by_criteria`.
 
     The only one that exposes `not_applied`. `excluded` and `not_applied` are
@@ -186,14 +282,38 @@ class FindProductsByCriteriaResponse:
     list: absent and empty are not the same thing.
     """
 
-    results: list[Product]
-    query_understood: dict[str, object]
-    excluded: list[ExcludedProduct] | None = None
-    not_applied: list[NotApplied] | None = None
+    results: list[Product] = Field(
+        description=(
+            "Products that satisfy every hard boundary applied to the query, ordered "
+            "from most to least relevant. Array order is the entire result of the "
+            "ordering; no numeric product score exists."
+        )
+    )
+    query_understood: dict[str, object] = Field(
+        description=(
+            "The normalized criteria the service actually understood and applied. "
+            "Criteria reported in `not_applied` do not appear here."
+        )
+    )
+    excluded: list[ExcludedProduct] | None = Field(
+        default=None,
+        description=(
+            "Relevant products that do not satisfy one or more query boundaries and "
+            "are therefore not valid results. Never present an excluded product as if "
+            "it satisfied the customer's request."
+        ),
+    )
+    not_applied: list[NotApplied] | None = Field(
+        default=None,
+        description=(
+            "Input criteria that could not be applied, while the rest of the query "
+            "was still executed. Do not claim that the returned products satisfy "
+            "these criteria."
+        ),
+    )
     currency: str = "EUR"
 
 
-@dataclass
 class RelatedProduct(Product):
     """An element of `get_related_products`: a `Product` **plus** its relation.
 
@@ -202,11 +322,18 @@ class RelatedProduct(Product):
     where there is a starting point to talk about.
     """
 
-    relation_type: str | None = None
+    relation_type: str | None = Field(
+        default=None,
+        description=(
+            "Nature of an `alternative_to` relationship. `equivalent` means the two "
+            "products are versions of the same object or commercial concept, and is "
+            "only used when the catalog provides enough evidence; `same_function` "
+            "means another object that serves the same need."
+        ),
+    )
 
 
-@dataclass
-class GetRelatedProductsResponse:
+class GetRelatedProductsResponse(BaseModel):
     """`get_related_products`. Exposes `excluded`, never `not_applied`."""
 
     results: list[RelatedProduct]
@@ -215,8 +342,7 @@ class GetRelatedProductsResponse:
     currency: str = "EUR"
 
 
-@dataclass
-class GetProductDetailsResponse:
+class GetProductDetailsResponse(BaseModel):
     """`get_product_details`. A single `Product`, in `result`, not in a list."""
 
     result: Product
@@ -235,28 +361,48 @@ ERROR_TYPE = (
 )
 
 
-@dataclass
-class RecoverableError:
+class RecoverableError(BaseModel):
     """A foreseen request that cannot be executed. It travels with HTTP 200.
 
     It is content, not transport: that is why it enters through the Success
     branch of the API Block and the agent tells it apart by `error_type`.
     """
 
-    error_type: str
+    error_type: str = Field(
+        description=(
+            "Stable code identifying a recoverable problem with the request that "
+            "prevented the catalog operation from executing. Use it to determine how "
+            "the next call must be corrected."
+        )
+    )
     detail: str = ""
     parameter: str | None = None
     product_id: str | None = None
     relation: str | None = None
 
 
-@dataclass
-class TechnicalFailure:
+class TechnicalFailure(BaseModel):
     """A real failure of the service. It travels with 5xx and its own vocabulary."""
 
-    error_code: str
-    incident_id: str
-    retryable: bool = True
+    error_code: str = Field(
+        description=(
+            "Stable code for a service-level failure. A technical failure does not "
+            "mean the catalog contains no matching products."
+        )
+    )
+    incident_id: str = Field(
+        description=(
+            "Opaque identifier for server-side troubleshooting. It carries no catalog "
+            "or customer meaning and should not be shown to the customer."
+        )
+    )
+    retryable: bool = Field(
+        default=True,
+        description=(
+            "Whether repeating the same request may succeed without changing the "
+            "customer's criteria."
+        ),
+    )
 
 
 METADATA_BY_OPERATION: dict[str, tuple[str, ...]] = {

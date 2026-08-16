@@ -1,15 +1,16 @@
-"""La puerta de cobertura.
+"""The coverage gate.
 
-Termina con código de error si el artefacto derivado no cubre exactamente el
-catálogo canónico o si alguna relación no es íntegra. **Código de error significa
-que no se despliega**: es una puerta, no un respaldo (A3.4).
+It exits with an error code if the derived artifact does not cover exactly the
+canonical catalog or if some relation is not sound. **An error code means nothing
+is deployed**: it is a gate, not a fallback (A3.4).
 
-Valida **forma e integridad, no reinterpreta el catálogo**. No comprueba si
-`equivalent` se eligió bien —eso es una lectura del text_ y ocurre en el
-enriquecimiento—, sino que lo escrito sea consistente consigo mismo.
+It validates **shape and integrity; it does not reinterpret the catalog**. It
+does not check whether `equivalent` was chosen well — that is a reading of the
+text and happens during enrichment — but that what is written is consistent with
+itself.
 
-El universe de la integridad referencial son **los identifiers canónicos**,
-no los 152 brutos: un `alt_product_id` es un aliases_ de identidad, no un nodo.
+The universe of referential integrity is **the canonical identifiers**, not the
+152 raw rows: an `alt_product_id` is an identity alias, not a node.
 """
 
 from __future__ import annotations
@@ -26,10 +27,10 @@ import yaml  # noqa: E402
 import normalization  # noqa: E402
 
 VOCABULARY_VERSION = 4
-# `product_type` NO está aquí: es el único vocabulary **controlado pero
-# abierto**, porque un product nuevo introduce legítimamente un kind_ nuevo con
-# sus aliases_. De él se comprueba que exista en el fichero —no que pertenezca a una
-# lista congelada— y que ningún aliases_ resuelva a dos types_ distintos.
+# `product_type` is NOT here: it is the only **controlled but open** vocabulary,
+# because a new product legitimately introduces a new type with its aliases. Of it
+# we check that it exists in the file — not that it belongs to a frozen list — and
+# that no alias resolves to two different types.
 CLOSED_VOCABULARIES = (
     "use_case",
     "functional_family",
@@ -39,19 +40,71 @@ CLOSED_VOCABULARIES = (
 RELATION_TYPE = {"equivalent", "same_function"}
 
 
-def _entradas(layer: dict | list) -> dict[str, dict]:
+def _entries_of(layer: dict | list) -> dict[str, dict]:
     products = layer["products"] if isinstance(layer, dict) and "products" in layer else layer
     if isinstance(products, list):
-        return {entrada["product_id"]: entrada for entrada in products}
+        return {entry["product_id"]: entry for entry in products}
     return products
 
 
+def _at_previous_revision(path_in_repo: str) -> str | None:
+    """The content of a file one commit ago, or `None` when there is no history."""
+    import subprocess
+
+    try:
+        output = subprocess.run(
+            ["git", "show", f"HEAD~1:{path_in_repo}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    return output.stdout
+
+
+def _growth_is_justified(vocabulary: dict, identifiers: set[str]) -> list[str]:
+    """No commit may add more product types than it adds canonical products.
+
+    By construction each new product introduces at most one new type, so more new
+    types than new products means the classifier is inventing rather than the
+    catalog growing. It is the only thing about this that can be decided
+    deterministically: whether two names mean the same thing cannot, and that
+    protection belongs to the classifier's criterion.
+    """
+    import json
+
+    import yaml
+
+    previous_vocabulary = _at_previous_revision("data/vocabularies.yaml")
+    previous_layer = _at_previous_revision("data/semantic_layer.json")
+    if previous_vocabulary is None or previous_layer is None:
+        return []
+
+    before_types = set(yaml.safe_load(previous_vocabulary).get("product_type", {}))
+    new_types = set(vocabulary.get("product_type", {})) - before_types
+
+    before_layer = json.loads(previous_layer)
+    before_products = set(
+        before_layer["products"] if isinstance(before_layer, dict) else before_layer
+    )
+    new_products = identifiers - before_products
+
+    if len(new_types) > len(new_products):
+        return [
+            f"{len(new_types)} new product_type for {len(new_products)} new products: "
+            f"{sorted(new_types)}. Each new product introduces at most one type, so "
+            "this is invention, not growth"
+        ]
+    return []
+
+
 def validate(csv_path: Path, semantic_layer_path: Path, vocabularies_path: Path) -> list[str]:
-    """Devuelve la lista de failures. Vacía significa que la puerta se abre."""
+    """Return the list of failures. An empty list means the gate opens."""
     failures: list[str] = []
 
     layer = json.loads(semantic_layer_path.read_text(encoding="utf-8"))
-    entries = _entradas(layer)
+    entries = _entries_of(layer)
     vocabulary = yaml.safe_load(vocabularies_path.read_text(encoding="utf-8"))
 
     declared_version = (
@@ -59,108 +112,117 @@ def validate(csv_path: Path, semantic_layer_path: Path, vocabularies_path: Path)
     )
     if declared_version != VOCABULARY_VERSION:
         failures.append(
-            f"la layer declara vocabulary_version {declared_version!r} "
-            f"y se esperaba {VOCABULARY_VERSION}"
+            f"the layer declares vocabulary_version {declared_version!r} "
+            f"and {VOCABULARY_VERSION} was expected"
         )
     if vocabulary.get("version") != VOCABULARY_VERSION:
         failures.append(
-            f"el vocabulary declara version {vocabulary.get('version')!r} "
-            f"y se esperaba {VOCABULARY_VERSION}"
+            f"the vocabulary declares version {vocabulary.get('version')!r} "
+            f"and {VOCABULARY_VERSION} was expected"
         )
 
     product_types_by_id = {
-        product_id: entrada.get("product_type") for product_id, entrada in entries.items()
+        product_id: entry.get("product_type") for product_id, entry in entries.items()
     }
     canonicos, _ = normalization.canonicalize(
         csv_path, vocabularies_path, product_types_by_id
     )
     identifiers = {product.product_id for product in canonicos}
 
-    # Igualdad exacta de conjuntos: ni ausentes ni huérfanos.
+    # Exact set equality: neither missing nor orphan entries.
     missing = sorted(identifiers - set(entries))
     orphans = sorted(set(entries) - identifiers)
     if missing:
-        failures.append(f"sin entrada semántica: {missing}")
+        failures.append(f"without a semantic entry: {missing}")
     if orphans:
-        failures.append(f"entries huérfanas, sin product canónico: {orphans}")
+        failures.append(f"orphan entries, with no canonical product: {orphans}")
 
-    for product_id, entrada in sorted(entries.items()):
+    for product_id, entry in sorted(entries.items()):
         for field in CLOSED_VOCABULARIES:
-            if field not in entrada:
+            if field not in entry:
                 continue
-            value_ = entrada[field]
-            valores = value_ if isinstance(value_, list) else [value_]
-            fuera = [v for v in valores if v not in vocabulary.get(field, {})]
-            if fuera:
-                failures.append(f"{product_id}: {field} fuera del vocabulary: {fuera}")
+            value_ = entry[field]
+            values_ = value_ if isinstance(value_, list) else [value_]
+            outside = [v for v in values_ if v not in vocabulary.get(field, {})]
+            if outside:
+                failures.append(f"{product_id}: {field} outside the vocabulary: {outside}")
 
-        kind_ = entrada.get("product_type")
+        kind_ = entry.get("product_type")
         if not kind_:
-            failures.append(f"{product_id}: product_type vacío")
+            failures.append(f"{product_id}: empty product_type")
         elif kind_ not in vocabulary.get("product_type", {}):
             failures.append(
-                f"{product_id}: product_type {kind_!r} no está declarado en el vocabulary. "
-                "Puede crecer, pero se declara: no se usa sin darlo de alta"
+                f"{product_id}: product_type {kind_!r} is not declared in the vocabulary. "
+                "It may grow, but it is declared: it is not used without adding it"
             )
 
-        if not entrada.get("use_case"):
-            failures.append(f"{product_id}: use_case vacío")
-        if not entrada.get("functional_family"):
-            failures.append(f"{product_id}: functional_family vacío")
+        if not entry.get("use_case"):
+            failures.append(f"{product_id}: empty use_case")
+        if not entry.get("functional_family"):
+            failures.append(f"{product_id}: empty functional_family")
 
-    # Un aliases_ no puede resolver a dos types_ distintos: sería una ambigüedad que
-    # el servicio no puede deshacer al leer una consulta.
+    # An alias cannot resolve to two different types: it would be an ambiguity
+    # the service cannot undo when reading a query.
     owners: dict[str, str] = {}
     for kind_, definition in vocabulary.get("product_type", {}).items():
         for aliases_ in (definition.get("aliases", []) if isinstance(definition, dict) else []):
             key_ = aliases_.lower()
             if key_ in owners and owners[key_] != kind_:
                 failures.append(
-                    f"el aliases_ {aliases_!r} resuelve a {owners[key_]!r} y a {kind_!r}"
+                    f"the alias {alias!r} resolves to {owners[key_]!r} and to {kind_!r}"
                 )
             owners[key_] = kind_
         if not (definition.get("definicion") if isinstance(definition, dict) else None):
-            failures.append(f"product_type {kind_!r} sin definition")
+            failures.append(f"product_type {kind_!r} without a definition")
 
     pairs_seen: set[tuple[str, str]] = set()
-    for product_id, entrada in sorted(entries.items()):
-        for link in entrada.get("pairs_with") or []:
+    for product_id, entry in sorted(entries.items()):
+        for link in entry.get("pairs_with") or []:
             other = link["product_id"] if isinstance(link, dict) else link
             if other not in identifiers:
-                failures.append(f"{product_id}: pairs_with apunta a {other}, que no es canónico")
+                failures.append(f"{product_id}: pairs_with points at {other}, which is not canonical")
             if other == product_id:
-                failures.append(f"{product_id}: pairs_with apunta a sí mismo")
+                failures.append(f"{product_id}: pairs_with points at itself")
 
-        for link in entrada.get("alternative_to") or []:
+        for link in entry.get("alternative_to") or []:
             if not isinstance(link, dict) or "product_id" not in link:
-                failures.append(f"{product_id}: alternative_to sin product_id")
+                failures.append(f"{product_id}: alternative_to without product_id")
                 continue
             other = link["product_id"]
             if other not in identifiers:
                 failures.append(
-                    f"{product_id}: alternative_to apunta a {other}, que no es canónico"
+                    f"{product_id}: alternative_to points at {other}, which is not canonical"
                 )
             if other == product_id:
-                failures.append(f"{product_id}: alternative_to apunta a sí mismo")
+                failures.append(f"{product_id}: alternative_to points at itself")
             if link.get("relation_type") not in RELATION_TYPE:
                 failures.append(
                     f"{product_id} → {other}: relation_type "
-                    f"{link.get('relation_type')!r} no es válido"
+                    f"{link.get('relation_type')!r} is not valid"
                 )
             pair = tuple(sorted((product_id, other)))
             if pair in pairs_seen:
-                failures.append(f"{pair[0]} · {pair[1]}: la pair está persistida dos veces")
+                failures.append(f"{pair[0]} · {pair[1]}: the pair is persisted twice")
             pairs_seen.add(pair)
             if product_id != pair[0]:
                 failures.append(
-                    f"{pair[0]} · {pair[1]}: persistida bajo el identificador larger"
+                    f"{pair[0]} · {pair[1]}: persisted under the larger identifier"
                 )
+
+    failures.extend(_growth_is_justified(vocabulary, identifiers))
+
+    used_types = {entry.get("product_type") for entry in entries.values()}
+    disappeared = used_types - set(vocabulary.get("product_type", {})) - {None}
+    if disappeared:
+        failures.append(
+            f"product_type in use that no longer exists in the vocabulary: {sorted(disappeared)}"
+        )
 
     return failures
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Puerta de cobertura de la layer semántica")
+    parser = argparse.ArgumentParser(description="Coverage gate of the semantic layer")
     parser.add_argument("--csv", required=True)
     parser.add_argument("--semantic", required=True)
     parser.add_argument("--vocabularies", default="data/vocabularies.yaml")
@@ -170,12 +232,12 @@ def main() -> int:
         Path(options.csv), Path(options.semantic), Path(options.vocabularies)
     )
     if failures:
-        print("La puerta NO se abre. No se despliega.\n")
+        print("The gate does NOT open. Nothing is deployed.\n")
         for fallo in failures:
             print(f"  · {fallo}")
         return 1
 
-    print("Cobertura completa e integridad correcta. La puerta se abre.")
+    print("Coverage complete and integrity sound. The gate opens.")
     return 0
 
 

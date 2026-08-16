@@ -1,9 +1,9 @@
-"""Pruebas de las fronteras, la precedencia y los related_products.
+"""Tests of the boundaries, the precedence and the related products.
 
-Aquí caen los seis escenarios de A8.7 con sus recuentos declarados —34, 0, 97 y
-132— y los casos que se implementan mal si no se comprueban: `universal`, los
-ausentes de `rating`, `gift_risk` modulado, y la cascada de tres levels de
-`alternative_to`.
+Here the six scenarios of A8.7 land with their declared counts — 34, 0, 97 and
+132 — together with the cases that get implemented wrong when they are not
+checked: `universal`, the missing values of `rating`, `gift_risk` modulated by
+`buyer_knows_recipient`, and the three-level cascade of `alternative_to`.
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ def search(catalog, gender_specific_types, quality, criteria, product_type=None)
 
 
 # --------------------------------------------------------------------------
-# Las doce fronteras
+# The twelve boundaries
 # --------------------------------------------------------------------------
 
 
@@ -97,7 +97,7 @@ def test_recipient_kids_is_the_only_recipient_value_that_cuts(catalog, gender_sp
 
 
 # --------------------------------------------------------------------------
-# La restricción de coincidencia exacta
+# The exact-match restriction
 # --------------------------------------------------------------------------
 
 
@@ -112,7 +112,7 @@ def test_without_product_type_nothing_is_restricted(catalog):
 
 
 # --------------------------------------------------------------------------
-# A8.7 · los seis escenarios
+# A8.7 · the six scenarios
 # --------------------------------------------------------------------------
 
 
@@ -126,7 +126,7 @@ def test_scenario_1_the_sister(catalog, gender_specific_types, quality):
     }
     inside, ordered = search(catalog, gender_specific_types, quality, criteria)
     assert len(inside) == 34
-    # La consulta no lleva `use_case`, y ahí `universal` va delante.
+    # The query carries no `use_case`, and there `universal` goes first.
     assert ordered[0].product_id == "EX-001"
 
 
@@ -160,12 +160,12 @@ def test_scenario_5_something_retro(catalog, gender_specific_types, quality):
     inside, ordered = search(catalog, gender_specific_types, quality, criteria)
     assert len(inside) == 132
     assert [p.product_id for p in ordered[:4]] == ["GP-005", "GP-001", "GP-009", "GP-003"]
-    # La consola agotada no aparece.
+    # The out-of-stock console does not show up.
     assert all("Console" not in p.name for p in ordered)
 
 
 # --------------------------------------------------------------------------
-# El ordered por precedencia · los casos que se implementan mal
+# The order by precedence · the cases that get implemented wrong
 # --------------------------------------------------------------------------
 
 
@@ -192,10 +192,10 @@ def test_universal_does_not_match_a_concrete_situation(catalog, gender_specific_
 
 
 def test_a_known_rating_goes_before_a_missing_one(catalog, gender_specific_types, quality):
-    """Y solo entre los que llegan empatados a ese level.
+    """And only among those that arrive tied at that level.
 
-    Un product sin rating_value que ya ganó en un level previous sigue delante: este
-    level solo interviene cuando la comparación ha llegado hasta aquí.
+    A product without a rating that already won at an earlier level stays ahead:
+    this level only intervenes when the comparison has reached it.
     """
     _, ordered = search(catalog, gender_specific_types, quality, {})
     keys_ = [selection.precedence_key(p, {}, quality[p.product_id]) for p in ordered]
@@ -208,10 +208,10 @@ def test_a_known_rating_goes_before_a_missing_one(catalog, gender_specific_types
             next_, {}, quality[next_.product_id]
         )
         if previous_key[:5] != next_key[:5]:
-            continue  # los separó un level previous
+            continue  # an earlier level separated them
         if previous.rating is None and next_.rating is not None:
             raise AssertionError(
-                f"{previous.product_id} sin rating_value va delante de {next_.product_id}"
+                f"{previous.product_id} without a rating goes before {next_.product_id}"
             )
         compared += 1
     assert compared and keys_
@@ -220,9 +220,9 @@ def test_a_known_rating_goes_before_a_missing_one(catalog, gender_specific_types
 def test_a_missing_rating_is_not_compared_as_zero(catalog):
     without_rating = next(p for p in catalog.all_products() if p.rating is None)
     key_ = selection.precedence_key(without_rating, {})
-    nivel_seis = key_[5]
-    assert nivel_seis[0] == 1  # desconocido, detrás del conocido
-    assert nivel_seis[1] == 0.0  # y no una rating_value de cero
+    level_six = key_[5]
+    assert level_six[0] == 1  # unknown, behind the known one
+    assert level_six[1] == 0.0  # and not a rating of zero
 
 
 def test_the_rating_rules_and_reviews_only_break_ties(catalog):
@@ -265,15 +265,14 @@ def test_the_final_tie_is_stabilised_with_product_id(catalog, gender_specific_ty
 
 
 def test_no_response_carries_a_score(catalog):
-    from dataclasses import fields
-
-    nombres = {f.name for f in fields(Product)}
+    
+    nombres = set(Product.model_fields)
     for sospechoso in ("score", "product_score", "weight", "similarity", "rank", "position"):
         assert sospechoso not in nombres
 
 
 # --------------------------------------------------------------------------
-# Relacionados · los tres levels
+# Related products · the three levels
 # --------------------------------------------------------------------------
 
 
@@ -309,7 +308,7 @@ def test_pairs_with_has_no_three_levels(catalog, gender_specific_types, quality)
 def test_the_complement_need_not_stand_alone_as_a_gift(
     catalog, gender_specific_types, quality
 ):
-    """La piedra de afilar llega por `pairs_with`, y no es un regalo por sí sola."""
+    """The sharpening stone arrives through `pairs_with`, and is no gift on its own."""
     knife = catalog.by_id("KD-001")
     chosen = selection.related_products(
         catalog.all_products(), "pairs_with", knife, {}, 5, gender_specific_types, quality

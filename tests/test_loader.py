@@ -1,14 +1,13 @@
-"""Pruebas de `models.py` y `loader.py`, contra los datos reales.
+"""Tests of `models.py` and `loader.py`, against the real data.
 
-Cubren el test 1 de la puerta de la Fase 3 —los recuentos de carga—, el test 3
-—una sola canonicalización— y la parte de forma de los tests 16 y 17.
+Cover test 1 of the Phase 3 gate — the load counts —, test 3 — a single
+canonicalization — and the shape part of tests 16 and 17.
 """
 
 from __future__ import annotations
 
 import json
 import sys
-from dataclasses import fields
 from pathlib import Path
 
 import pytest
@@ -68,7 +67,7 @@ def test_there_are_5_stocking_filler(loaded):
 
 
 # --------------------------------------------------------------------------
-# Test 3 · una sola canonicalización
+# Test 3 · a single canonicalization
 # --------------------------------------------------------------------------
 
 
@@ -103,18 +102,18 @@ def test_no_value_falls_outside_the_vocabulary(loaded):
 
 
 # --------------------------------------------------------------------------
-# B4.3 · la forma de Product
+# B4.3 · the shape of Product
 # --------------------------------------------------------------------------
 
 
 def test_product_has_exactly_26_fields():
-    assert len(fields(models.Product)) == 26
-    assert tuple(f.name for f in fields(models.Product)) == models.PRODUCT_FIELDS
+    assert len(models.Product.model_fields) == 26
+    assert tuple(models.Product.model_fields) == models.PRODUCT_FIELDS
 
 
 @pytest.mark.parametrize("field", ["description_quality", "tags", "stock", "alt_product_ids"])
 def test_the_fields_that_do_not_travel_are_not_in_product(field):
-    assert field not in {f.name for f in fields(models.Product)}
+    assert field not in set(models.Product.model_fields)
 
 
 def test_the_loader_does_keep_the_fields_that_do_not_travel(loaded):
@@ -125,7 +124,7 @@ def test_the_loader_does_keep_the_fields_that_do_not_travel(loaded):
 
 
 # --------------------------------------------------------------------------
-# Relaciones · una sola vez en el fichero, resueltas desde los dos extremos
+# Relations · written once in the file, resolved from both ends
 # --------------------------------------------------------------------------
 
 
@@ -154,7 +153,7 @@ def test_no_product_relates_to_itself(loaded):
 
 def test_relation_type_does_not_travel_in_product(loaded):
     products, _, relation_types = loaded
-    assert "relation_type" not in {f.name for f in fields(models.Product)}
+    assert "relation_type" not in set(models.Product.model_fields)
     assert relation_types
     for kind in relation_types.values():
         assert kind in {"equivalent", "same_function"}
@@ -169,7 +168,7 @@ def test_there_is_only_one_equivalent_relation(loaded):
 
 
 # --------------------------------------------------------------------------
-# B4.8 · los metadata son de cada operación, no comunes
+# B4.8 · metadata belongs to each operation, it is not common
 # --------------------------------------------------------------------------
 
 
@@ -226,7 +225,7 @@ def test_excluded_and_not_applied_are_omitted_when_empty():
 
 
 # --------------------------------------------------------------------------
-# La puerta de A3.4, vista desde el arranque
+# The gate of A3.4, seen from start-up
 # --------------------------------------------------------------------------
 
 

@@ -1,8 +1,8 @@
-"""Pruebas de la canonicalización, contra el catálogo real.
+"""Tests of the canonicalization, against the real catalog.
 
-Cubren la parte de la puerta de la Fase 3 que depende solo de `normalization.py`:
-el test 1 en lo que toca al conteo de carga, el test 2 entero y el test 6 en lo
-que toca a no inventar values_ ausentes.
+Cover the part of the Phase 3 gate that depends only on `normalization.py`: test
+1 as far as the load counts go, test 2 in full, and test 6 as far as not
+inventing missing values goes.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ def catalog(tipos):
 
 
 # --------------------------------------------------------------------------
-# Test 2 · canonicalización
+# Test 2 · canonicalization
 # --------------------------------------------------------------------------
 
 
@@ -79,7 +79,7 @@ def test_an_unknown_identifier_does_not_resolve(catalog):
 
 
 # --------------------------------------------------------------------------
-# Test 1 · conteos de carga
+# Test 1 · load counts
 # --------------------------------------------------------------------------
 
 
@@ -101,7 +101,7 @@ def test_category_normalization_treats_and_as_ampersand():
 
 
 # --------------------------------------------------------------------------
-# Apertura de recipient
+# Opening up recipient
 # --------------------------------------------------------------------------
 
 
@@ -143,7 +143,7 @@ def test_kids_never_carries_anyone(catalog):
 
 
 # --------------------------------------------------------------------------
-# Test 6 · no se inventan los ausentes
+# Test 6 · missing values are not invented
 # --------------------------------------------------------------------------
 
 
@@ -166,7 +166,7 @@ def test_the_two_poor_descriptions_are_the_written_ones(catalog):
 
 
 # --------------------------------------------------------------------------
-# Normalización de formatos · la tabla de A2.2
+# Format normalization · the table of A2.2
 # --------------------------------------------------------------------------
 
 
@@ -209,7 +209,7 @@ def test_unreadable_stock_stops_the_start_up():
 
 
 # --------------------------------------------------------------------------
-# Determinismo · lo que sostiene la puerta de cobertura
+# Determinism · what holds up the coverage gate
 # --------------------------------------------------------------------------
 
 

@@ -158,6 +158,8 @@ catalog-service/
 | Forma | Qué es |
 |---|---|
 | **`Product`** | **26 campos.** La forma única de las cuatro operaciones que devuelven mercancía |
+| **Cómo se escriben** | **Modelos de pydantic, no `dataclass`.** Es la única manera de que la descripción de un campo llegue al JSON Schema, y B7.8 exige quince de ellas |
+| **Los vocabularios cerrados** | `use_case`, `functional_family`, `gift_risk` y `suitable_relationships` se construyen **como `enum` desde `vocabularies.yaml`** y se publican como esquemas propios, con su `definicion`. `product_type` es la excepción: texto libre (B7.10) |
 | **`ExcludedProduct`** | Forma reducida: `product_id` · `name` · `price` · `exclusion_reason` · `actual` · `required` |
 | **`CategorySummary`** | Lo que devuelve `get_categories`: estado de la categoría, no solo el nombre |
 
@@ -170,6 +172,8 @@ catalog-service/
 | `find_products_by_criteria` | Product | `limit` **1 a 8**, por defecto 8 · **5** cuando la conversación está acotada | `query_understood` · `excluded` · `not_applied` |
 | `get_related_products` | Product | `limit` **1 a 5**, por defecto 3 | `relation_type` · `query_understood` · `excluded` |
 | `get_product_details` | Product | 1 | — |
+
+**Y quince campos llevan descripción, las de B7.8 literales**, porque su mala lectura cambia lo que el agente afirma: `results`, `excluded`, `exclusion_reason`, `actual`, `required`, `not_applied`, `query_understood`, `total`, `offset`, `relation_type`, `gift_risk`, `is_standalone_gift`, `in_stock`, `stocking_filler`, `pairs_with` y `alternative_to`. Los evidentes —`name`, `price`, `brand`, `color`, `material`— no la llevan.
 
 Lo que se deduce de esa tabla, y es lo que evita el megaesquema:
 
@@ -282,6 +286,8 @@ El protocolo `CatalogRepository`. Es lo que permite que el resto del código no 
 
 **Dentro de cada nivel se aplica la misma cadena de B2.8**, usando **únicamente los criterios presentes en la llamada**. No se crea un criterio de proximidad, ni una puntuación, ni un orden propio para los relacionados.
 
+**La restricción exacta de `product_type` NO se propaga aquí** (v34 → v35). En la búsqueda identifica el objeto pedido y restringe; en relacionados **describe el objeto que se sustituye**, así que define el nivel de partida y **no limita la respuesta**: un sustituto es muy a menudo otro tipo de objeto. Ante *"algo como un cuchillo de chef"* sin producto de origen, primero salen los cuchillos de chef, después lo de su misma familia funcional, y después el resto.
+
 **Con `relation=pairs_with` no hay tres niveles**: se parte de los `pairs_with` explícitos del producto ancla, se aplican las fronteras activas y se ordena a los supervivientes con esa misma precedencia.
 
 **`is_standalone_gift` lo exigen la búsqueda y `alternative_to`; no lo exigen `pairs_with`, `get_products_by_category` y `get_product_details`** (B2.7, registros B2ag y B2ah). Y en `pairs_with` no se exige (B2.7, registro B2ag): el complemento no tiene que sostenerse solo como regalo — la piedra de afilar, el muestrario de tintas o la funda son justo lo que se busca. `in_stock` sí corta también aquí, sin excepción.
@@ -323,6 +329,10 @@ FastAPI con las cinco operaciones. **Las descripciones de B7 se escriben literal
 | Fallo técnico | **5xx**, con `error_code`, que es un vocabulario **separado** del de `error_type` |
 | Abierto sin credencial | `/openapi.json` y `/docs` |
 | Fuera del contrato | `/_diagnostics/load-report`, con `include_in_schema=False` |
+| Rutas | La ruta **es** el `operation_id`: `/get_categories`, `/get_products_by_category`, `/find_products_by_criteria`, `/get_related_products`, `/get_product_details` |
+| Criterios compartidos | Se declaran **una sola vez** y las dos operaciones los reutilizan, con el mismo esquema y la misma descripción (B7.10) |
+| Validación | Los errores previsibles de FastAPI y pydantic **se interceptan** y salen como **200 con `error_type`** (B5.3). **El 422 no existe en este contrato** |
+| Declarado en la spec | **200, 401, 403, 429 y 5xx**, cada una con su forma |
 
 **Los dos booleanos sin valor por defecto.** `gift_wrap_required` y `stocking_filler` **no se rellenan con `false`** cuando el cliente no los ha dicho: ausente, `false` y `true` son tres estados distintos, y la ausencia **no viaja en `query_understood`**. Es una regla de la petición, no de la carga del catálogo.
 
@@ -360,10 +370,18 @@ FastAPI con las cinco operaciones. **Las descripciones de B7 se escriben literal
 | 22 | Relacionados · los 20 parámetros | `gift_wrap_required` y `buyer_knows_recipient` **dentro**; `stocking_filler` **fuera**; `limit` 1 a 5, por defecto 3 |
 | 23 | Relacionados · la etiqueta | Una relación explícita entre dos objetos distintos sale como **`same_function`**, no como `equivalent`. El nivel 1 no implica `equivalent` |
 | 24 | Nadie amplía lo que ya llegó completo | `get_product_details` **no** se usa para enriquecer un producto que ya vino en una lista: las tres operaciones devuelven `Product` entero |
-| 25 | Autenticación (B6.12) | Sin `X-Api-Key` → **401**. Clave desconocida → **401**. Catalog key contra diagnóstico → **403**. `/openapi.json` y `/docs` sin credencial → **200** |
-| 26 | Límite de tasa | Con la Catalog key, **60 por minuto**; la 61 en el mismo minuto → **429** con `error_code: "rate_limited"` |
+| 25 | Vocabularios como `enum` | `UseCase` 30, `FunctionalFamily` 31, `GiftRisk` 3, `SuitableRelationship` 5, publicados como esquemas y referenciados por sus parámetros. `product_type` **sin `enum`** |
+| 26 | Criterios compartidos | La descripción de `product_type`, `use_case`, `functional_family`, `category`, `subcategory` y los tres de precio es **idéntica** en la búsqueda y en relacionados |
+| 27 | Validación recuperable | Un valor fuera de un `enum` o un número mal formado → **200** con `invalid_parameter`. **Ninguna operación declara 422** |
+| 28 | Códigos declarados | Las cinco declaran **401, 403, 429 y 5xx** |
+| 29 | Descripciones de B7.8 | Los quince campos las llevan **en el JSON Schema**, no solo en el código |
+| 30 | Relacionados y el tipo | Con `alternative_to` y `product_type`, la respuesta **incluye otros tipos**; la búsqueda con el mismo `product_type` **no** |
+| 31 | Autenticación (B6.12) | Sin `X-Api-Key` → **401**. Clave desconocida → **401**. Catalog key contra diagnóstico → **403**. `/openapi.json` y `/docs` sin credencial → **200** |
+| 32 | Límite de tasa | Con la Catalog key, **60 por minuto**; la 61 en el mismo minuto → **429** con `error_code: "rate_limited"` |
 
-**Cerrada cuando:** los veintiséis pasan, y el 9 da exactamente 34 / 0 / 97 / 132.
+**Cerrada cuando:** los treinta y dos pasan, y el 9 da exactamente 34 / 0 / 97 / 132.
+
+> Hoy son **159 pruebas** en el conjunto, porque varias de esas treinta y dos se comprueban con más de un caso.
 
 ---
 
@@ -420,10 +438,21 @@ fly.toml y logs                            → no contienen ninguna credencial
 |---|---|
 | `prompts/enrich.md` | El criterio de los campos propios |
 | `prompts/relate.md` | El criterio de las relaciones |
-| `scripts/enrich.py` | Campos propios de **los productos nuevos**, o de **los 150** si el commit ha cambiado `data/vocabularies.yaml` o `prompts/enrich.md` |
+| `scripts/enrich.py` | Campos propios de **los productos nuevos**, o de **los 150** si el commit ha **cambiado el criterio**. También **da de alta los `product_type` nuevos** en el vocabulario, sin subir `vocabulary_version` |
 | `scripts/relate.py` | Relaciones, **recálculo completo**, siempre |
 | `scripts/validate_semantic.py` | **La puerta de cobertura** |
-| `deploy.yml` | Encadena: enrich → relate → validate → tests → build → deploy |
+| `deploy.yml` | Encadena: enrich → relate → puerta → tests → **commit de vuelta** → deploy |
+
+**Cuatro cosas del workflow que no son decorativas:**
+
+| | |
+|---|---|
+| `permissions: contents: write` | El pipeline **escribe en el repositorio** —la capa semántica y, cuando hay un tipo nuevo, el vocabulario—. El token por defecto es de solo lectura en un repositorio restringido, y el YAML lo eleva **para ese job y para nada más** |
+| `fetch-depth: 2` | `enrich.py` compara el vocabulario con el de la revisión anterior para distinguir un alta de un cambio de criterio, y la puerta lo necesita para el invariante de crecimiento. Sin historia, los dos caen del lado seguro |
+| `concurrency` sin cancelar | Dos ejecuciones sobre la misma rama se pisarían al empujar. Se encolan en vez de cancelarse: una ejecución a medias no puede dejar el artefacto escrito y el vocabulario sin escribir |
+| `file_pattern` con **los dos ficheros** | `data/semantic_layer.json` **y** `data/vocabularies.yaml`. Un artefacto que referencia un tipo que el vocabulario no lleva cierra la puerta en la ejecución siguiente |
+
+> Un push hecho con `GITHUB_TOKEN` **no vuelve a disparar el workflow**, así que el commit de vuelta no puede entrar en bucle.
 
 **Los tres scripts importan `src/normalization.py`.** Ninguno canonicaliza por su cuenta: la puerta de cobertura compara conjuntos de identificadores, y solo significa algo si los dos lados se han construido con la misma implementación.
 
@@ -432,7 +461,9 @@ fly.toml y logs                            → no contienen ninguna credencial
 | Qué ha cambiado en el commit | `enrich.py` | `relate.py` |
 |---|---|---|
 | Solo `data/catalog.csv` | Incremental: los productos sin entrada | Completo |
-| `data/vocabularies.yaml` o `prompts/enrich.md` | **Completo: los 150** | Completo |
+| `data/vocabularies.yaml` · **alta de un `product_type` nuevo** | **Incremental.** Crece el inventario, no el criterio | Completo |
+| `data/vocabularies.yaml` · **cambio de criterio** | **Completo: los 150** | Completo |
+| `prompts/enrich.md` | **Completo: los 150** | Completo |
 | `prompts/relate.md` | Incremental | Completo |
 
 > Un vocabulario nuevo deja productos clasificados con el significado antiguo dentro del mismo fichero. **El artefacto sigue siendo válido y pasa la puerta**: por eso la reclasificación no puede depender de que alguien se acuerde.
@@ -593,6 +624,11 @@ Landing con el widget embebido y personalizado · servidor MCP con transporte st
 | **4** | La imagen no tenía versión de Python | **Python 3.12** |
 | **1.1** | No había `.gitignore` | Creado, y añadido a A3.9: entorno virtual, temporales de Python, `.env` y `*.key` |
 | **1.1 · 4** | No había fichero de dependencias | `requirements.txt` en la raíz, y entra en la imagen. Añadido también a A3.9 |
+| **2.1** | Las formas eran `dataclass` y sin descripciones de campo | Modelos de pydantic, con las quince descripciones de B7.8 en el JSON Schema, y los cuatro vocabularios cerrados como `enum` desde `vocabularies.yaml` |
+| **2.6** | Los relacionados restringían por `product_type` | La restricción exacta **no se propaga** (v34 → v35): ahí `product_type` es el ancla, no el universo |
+| **2.7** | Los criterios se declaraban dos veces y el 422 escapaba | Criterios compartidos definidos una vez; validación previsible transformada a **200 con `error_type`**; 401, 403, 429 y 5xx declarados; rutas iguales al `operation_id` |
+| **6** | El alta de un `product_type` nuevo no estaba resuelta | La escribe `enrich.py` en la misma ejecución, sin subir la versión; la puerta valida definición, alias, tipos desaparecidos y que no haya más tipos nuevos que productos nuevos (A4.11) |
+| **3** | Veintiséis pruebas | Treinta y dos, con las seis nuevas del contrato |
 | **2.6 · 2.7** | No decía dónde corta `is_standalone_gift` | Tabla de las cinco operaciones: lo exigen la búsqueda y `alternative_to`; no lo exigen `pairs_with`, la navegación y el detalle (B2.7, registros B2ag y B2ah) |
 | **7.6** | No decía cuántas acciones se asignan como Tools | Cuatro Tools; `find_products_by_criteria` **no** se asigna |
 | **7.7** | Reaparecía `status = missing_required`, `search_count = 1` en cualquier Success, y las ramas no se limpiaban | La lógica vigente de C, con las tres reglas escritas debajo |

@@ -1,21 +1,21 @@
-"""Las cinco operaciones, la frontera de acceso y la especificación OpenAPI.
+"""The five operations, the access boundary and the OpenAPI specification.
 
-**Cada operación se llama igual en todas partes**: la path_, el `operation_id` y
-el esquema de su response llevan el mismo name_, el que fija la memoria. Un
-name_ distinto en cualquiera de los tres sitios es un name_ que el agente ve y
-que no está en ninguna decisión.
+**Every operation is named the SAME everywhere**: the route, the `operation_id`
+and the schema of its response carry the name the memory fixes. A different name
+in any of the three places is a name the agent sees and that no decision holds.
 
-**Todo parámetro se declara.** La especificación es lo único que indigo.ai lee
-para construir sus llamadas: un criterio que no esté declarado aquí no existe
-para el agente, por mucho que el servicio sepa aplicarlo. Por eso no se leen
-parámetros a mano de la petición, y por eso cada operación declara su forma de
-response.
+**Every parameter is declared.** The specification is the only thing indigo.ai
+reads to build its calls: a criterion that is not declared here does not exist
+for the agent, no matter how well the service knows how to apply it. That is why
+no parameters are read by hand from the request, and why every operation declares
+the shape of its response.
 
-Las descripciones de B7 se escriben **literales**, en inglés, porque son
-exactamente lo que el modelo lee al decidir qué capability usar.
+The descriptions of B7 are written **literally**, in English, because they are
+exactly what the model reads when deciding which capability to use.
 
-Nada de lo que hay en este módulo decide qué products salen ni en qué orden:
-eso vive entero en `selection.py`.
+Nothing in this module decides which products come out or in which order: that
+lives entirely in `selection.py`. Here the request is translated, the access is
+checked and the response is shaped.
 """
 
 from __future__ import annotations
@@ -25,16 +25,22 @@ import time
 import uuid
 from collections import deque
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import yaml
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 import normalization
 import selection
 from models import (
     LIMITS_BY_OPERATION,
+    TechnicalFailure,
+    FunctionalFamily,
+    SuitableRelationship,
+    UseCase,
+    definitions_of,
     CategorySummary,
     ExcludedProduct,
     NotApplied,
@@ -54,7 +60,7 @@ VOCABULARIOS = RAIZ / "data" / "vocabularies.yaml"
 CAPA = RAIZ / "data" / "semantic_layer.json"
 
 # --------------------------------------------------------------------------
-# Arranque · el catálogo se carga una vez, no en cada petición
+# Start-up · the catalog is loaded once, not on every request
 # --------------------------------------------------------------------------
 
 catalog = InMemoryCatalog(CSV, VOCABULARIOS, CAPA)
@@ -69,7 +75,7 @@ SUBCATEGORIES = sorted({p.subcategory for p in catalog.all_products() if p.subca
 BRANDS = sorted({p.brand for p in catalog.all_products() if p.brand})
 
 # --------------------------------------------------------------------------
-# B6 · la frontera de acceso
+# B6 · the access boundary
 # --------------------------------------------------------------------------
 
 HEADER_NAME = "X-Api-Key"
@@ -90,11 +96,11 @@ def _capability(key_: str | None) -> str | None:
 
 
 def _within_rate_limit(capability: str) -> bool:
-    """Ventana deslizante de 60 segundos, en memoria del proceso.
+    """A sliding window of 60 seconds, in the memory of the process.
 
-    Solo se olvida lo que ya tiene más de un minuto, así que en ningún intervalo
-    de 60 segundos caben más peticiones que el límite. Vuelve a cero en cada
-    despliegue, y contaría por contenedor si hubiera más de uno.
+    Only what is already older than a minute is forgotten, so no interval of 60
+    seconds ever holds more requests than the limit. It goes back to zero on every
+    deployment, and would count per container if there were more than one.
     """
     now_ = time.monotonic()
     recent = _recent_requests[capability]
@@ -125,26 +131,26 @@ def _check(key_: str | None, expected: str) -> str:
 
 
 async def catalog_credential(x_api_key: str | None = Header(default=None)) -> str:
-    """Las cinco operaciones del catálogo. Es la que usa indigo.ai."""
+    """The five catalog operations. This is the one indigo.ai uses."""
     return _check(x_api_key, "catalog")
 
 
 async def diagnostics_credential(x_api_key: str | None = Header(default=None)) -> str:
-    """Solo la operadora del servicio."""
+    """The operator of the service, and nobody else."""
     return _check(x_api_key, "diagnostics")
 
 
 # --------------------------------------------------------------------------
-# Errores recuperables · HTTP 200 con `error_type`
+# Recoverable errors · HTTP 200 with `error_type`
 # --------------------------------------------------------------------------
 
 
 def recoverable(error_type: str, **extra: Any) -> JSONResponse:
-    """Una petición prevista que no se puede ejecutar. Es contenido, no transporte.
+    """A foreseen request that cannot be executed. It is content, not transport.
 
-    Se devuelve como `Response`, así que no pasa por el `response_model`: la
-    especificación describe la forma del éxito, y `error_type` está descrito en
-    la descripción de cada operación.
+    It is returned as a `Response`, so it does not go through `response_model`:
+    the specification describes the shape of success, and `error_type` is
+    described in the description of every operation.
     """
     body = {"error_type": error_type}
     body.update({key_: value_ for key_, value_ in extra.items() if value_ is not None})
@@ -152,7 +158,7 @@ def recoverable(error_type: str, **extra: Any) -> JSONResponse:
 
 
 # --------------------------------------------------------------------------
-# Vocabularios para la especificación
+# Vocabularies for the specification
 # --------------------------------------------------------------------------
 
 
@@ -173,8 +179,8 @@ FUNCTIONAL_FAMILY = _values_of("functional_family")
 SUITABLE_RELATIONSHIPS = _values_of("suitable_relationships")
 OCCASIONS = sorted({value_ for p in catalog.all_products() for value_ in p.occasion})
 
-# `product_type` NO tiene `enum`: es el único vocabulary que crece con el
-# inventario, y en el contrato viaja como text_ libre resuelto por aliases_.
+# `product_type` has NO `enum`: it is the only vocabulary that grows with the
+# inventory, and in the contract it travels as free text resolved by aliases.
 PRODUCT_TYPE_DESCRIPTION = (
     "The concrete object the customer asked for, as free text. Resolved against a "
     "controlled but growing vocabulary of product types and their aliases: `gyuto` "
@@ -185,7 +191,7 @@ PRODUCT_TYPE_DESCRIPTION = (
 
 
 def _resolve_product_type(requested: str | None) -> tuple[str | None, NotApplied | None]:
-    """Resuelve el objeto requested por su name_ o por uno de sus aliases_."""
+    """Resolve the requested object by its name or by one of its aliases."""
     if not requested:
         return None, None
     types_ = VOCABULARY["product_type"]
@@ -203,7 +209,95 @@ def _without_nulls(criteria: dict) -> dict:
 
 
 # --------------------------------------------------------------------------
-# La aplicación
+# B7.10 · the shared criteria, defined once
+# --------------------------------------------------------------------------
+#
+# A criterion that appears in more than one operation is declared here and reused,
+# with the same schema and the same description. What each operation adds is the
+# context of the operation, never a second definition of the criterion.
+
+MaxPrice = Annotated[float | None, Query(description="Upper price boundary, in EUR.")]
+MinPrice = Annotated[float | None, Query(description="Lower price boundary, in EUR.")]
+TargetPrice = Annotated[
+    float | None,
+    Query(description="Approximate price. It opens a band of ±20 % around it."),
+]
+MaxShippingDays = Annotated[
+    int | None, Query(description="Maximum acceptable delivery time, in days.")
+]
+ProductType = Annotated[str | None, Query(description=PRODUCT_TYPE_DESCRIPTION)]
+Category = Annotated[
+    str | None, Query(description="Catalog category. Allowed values: " + ", ".join(CATEGORIES))
+]
+Subcategory = Annotated[str | None, Query(description="Catalog subcategory.")]
+Brand = Annotated[str | None, Query(description="Exact brand. It does not admit degree.")]
+Color = Annotated[str | None, Query(description="Exact colour. Blue is not almost blue.")]
+Material = Annotated[str | None, Query(description="Exact material.")]
+UseCaseCriterion = Annotated[
+    list[UseCase] | None,
+    Query(
+        description=(
+            "Situations in which the product is used. It accepts several values, "
+            "which are alternatives and not accumulated points.\n"
+            + definitions_of("use_case")
+        )
+    ),
+]
+FunctionalFamilyCriterion = Annotated[
+    list[FunctionalFamily] | None,
+    Query(
+        description=(
+            "The work the object does. It accepts several values, which are "
+            "alternatives and not accumulated points.\n" + definitions_of("functional_family")
+        )
+    ),
+]
+Occasion = Annotated[
+    str | None,
+    Query(description="Event the gift is for. Allowed values: " + ", ".join(OCCASIONS)),
+]
+Recipient = Annotated[
+    Literal["her", "him", "couple", "kids"] | None,
+    Query(
+        description=(
+            "Who receives the gift. Only `kids` narrows the results: adult products "
+            "match any adult recipient, because the catalog marks gender by commercial "
+            "habit and not by a property of the object."
+        )
+    ),
+]
+Relationship = Annotated[
+    SuitableRelationship | None,
+    Query(
+        description=(
+            "Relationship between buyer and recipient. It never removes a product: it "
+            "only decides which of the surviving products comes first.\n"
+            + definitions_of("suitable_relationships")
+        )
+    ),
+]
+GiftWrapRequired = Annotated[
+    bool | None,
+    Query(
+        description=(
+            "Send `true` only when the customer asked for gift wrapping. Absent is not "
+            "`false`: absence is a state of its own and is never claimed as a preference."
+        )
+    ),
+]
+BuyerKnowsRecipient = Annotated[
+    bool | None,
+    Query(
+        description=(
+            "Whether the buyer knows the recipient well. Absent and `false` behave the "
+            "same and keep the precaution; `true` removes it. Absent is not `false`."
+        )
+    ),
+]
+
+
+# --------------------------------------------------------------------------
+# The application
 # --------------------------------------------------------------------------
 
 app = FastAPI(
@@ -218,11 +312,45 @@ app = FastAPI(
 )
 
 
+# --------------------------------------------------------------------------
+# B5.3 · foreseeable validation errors are not transport failures
+# --------------------------------------------------------------------------
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_becomes_recoverable(request: Request, error: RequestValidationError):
+    """Turn the automatic validation of FastAPI into the recoverable contract.
+
+    A value outside an `enum`, a malformed integer or a limit out of range are
+    **foreseeable problems of the request**, and the agent has to read them to
+    correct the next call. Left alone, FastAPI answers 422, which the agent reads
+    as a transport failure and treats as "the catalog is down" — the opposite of
+    what it should do. So they travel as **200 with `error_type`**, like every
+    other recoverable error (B5.3).
+    """
+    first = error.errors()[0] if error.errors() else {}
+    location = [part for part in first.get("loc", []) if part not in ("query", "path", "body")]
+    return recoverable(
+        "invalid_parameter",
+        parameter=str(location[0]) if location else None,
+        detail=first.get("msg", "the request does not satisfy the declared contract"),
+    )
+
+
+ACCESS_RESPONSES: dict[int | str, dict] = {
+    401: {"description": "Missing or unknown credential.", "model": TechnicalFailure},
+    403: {"description": "Valid credential without access to this surface.", "model": TechnicalFailure},
+    429: {"description": "Too many requests for this credential.", "model": TechnicalFailure},
+    503: {"description": "The catalog could not be queried.", "model": TechnicalFailure},
+}
+
+
 @app.get(
     "/get_categories",
     operation_id="get_categories",
     response_model=GetCategoriesResponse,
     dependencies=[Depends(catalog_credential)],
+    responses=ACCESS_RESPONSES,
     description=(
         "Returns the current normalized product categories in the catalog, including "
         "the number of available products and the current available price range for "
@@ -252,6 +380,7 @@ async def get_categories() -> GetCategoriesResponse:
     operation_id="get_products_by_category",
     response_model=GetProductsByCategoryResponse,
     dependencies=[Depends(catalog_credential)],
+    responses=ACCESS_RESPONSES,
     description=(
         "Browses products from one explicitly requested catalog category. Returns up "
         "to 8 products per page and supports continued navigation with `offset`. Use "
@@ -264,25 +393,23 @@ async def get_categories() -> GetCategoriesResponse:
     ),
 )
 async def get_products_by_category(
-    category: str = Query(description="The catalog category to browse."),
-    max_price: float | None = Query(default=None, description="Upper price boundary, in EUR."),
-    target_price: float | None = Query(
-        default=None, description="Approximate price. Opens a band of ±20 % around it."
-    ),
-    min_price: float | None = Query(default=None, description="Lower price boundary, in EUR."),
-    max_shipping_days: int | None = Query(
-        default=None, description="Maximum acceptable delivery time, in days."
-    ),
-    sort: Literal["rating", "price_asc", "price_desc"] = Query(
-        default="rating",
-        description=(
-            "Order of the page the customer is browsing. `rating` is the default; "
-            "`price_asc` and `price_desc` answer questions such as what is the cheapest "
-            "item in a category."
+    category: Annotated[str, Query(description="The catalog category to browse.")],
+    max_price: MaxPrice = None,
+    target_price: TargetPrice = None,
+    min_price: MinPrice = None,
+    max_shipping_days: MaxShippingDays = None,
+    sort: Annotated[
+        Literal["rating", "price_asc", "price_desc"],
+        Query(
+            description=(
+                "Order of the page the customer is browsing. `rating` is the default; "
+                "`price_asc` and `price_desc` answer questions such as what is the "
+                "cheapest item in a category."
+            )
         ),
-    ),
-    limit: int = Query(default=8, description="Products per page, 1 to 8."),
-    offset: int = Query(default=0, description="Where the page starts within `total`."),
+    ] = "rating",
+    limit: Annotated[int, Query(description="Products per page, 1 to 8.")] = 8,
+    offset: Annotated[int, Query(description="Where the page starts within `total`.")] = 0,
 ) -> Any:
     minimum, maximum, _ = LIMITS_BY_OPERATION["get_products_by_category"]
     if not (minimum <= limit <= maximum):
@@ -301,8 +428,8 @@ async def get_products_by_category(
         }
     )
     of_the_category = [p for p in catalog.all_products() if p.category == category]
-    # Navegar el estante no es ofrecer un regalo: aquí no se exige
-    # `is_standalone_gift`. `in_stock` sí corta, como en todo el servicio (B2.7).
+    # Browsing the shelf is not offering a gift: `is_standalone_gift` is not
+    # required here. `in_stock` does cut, as everywhere in the service (B2.7).
     inside = selection.take_what_qualifies(
         of_the_category, criteria, GENDER_SPECIFIC_TYPES, require_standalone_gift=False
     )
@@ -327,6 +454,7 @@ async def get_products_by_category(
     response_model=FindProductsByCriteriaResponse,
     response_model_exclude_none=True,
     dependencies=[Depends(catalog_credential)],
+    responses=ACCESS_RESPONSES,
     description=(
         "Primary cross-category product-discovery operation. Searches the whole "
         "catalog using any combination of customer constraints and preference signals, "
@@ -341,77 +469,33 @@ async def get_products_by_category(
     ),
 )
 async def find_products_by_criteria(
-    max_price: float | None = Query(default=None, description="Upper price boundary, in EUR."),
-    target_price: float | None = Query(
-        default=None, description="Approximate price. Opens a band of ±20 % around it."
-    ),
-    min_price: float | None = Query(default=None, description="Lower price boundary, in EUR."),
-    recipient: Literal["her", "him", "couple", "kids"] | None = Query(
-        default=None,
-        description=(
-            "Who receives the gift. Only `kids` narrows the results: adult products "
-            "match any adult recipient, because the catalog marks gender by commercial "
-            "habit and not by a property of the object."
+    max_price: MaxPrice = None,
+    target_price: TargetPrice = None,
+    min_price: MinPrice = None,
+    recipient: Recipient = None,
+    relationship: Relationship = None,
+    occasion: Occasion = None,
+    use_case: UseCaseCriterion = None,
+    functional_family: FunctionalFamilyCriterion = None,
+    buyer_knows_recipient: BuyerKnowsRecipient = None,
+    product_type: ProductType = None,
+    category: Category = None,
+    subcategory: Subcategory = None,
+    brand: Brand = None,
+    color: Color = None,
+    material: Material = None,
+    max_shipping_days: MaxShippingDays = None,
+    gift_wrap_required: GiftWrapRequired = None,
+    stocking_filler: Annotated[
+        bool | None,
+        Query(
+            description=(
+                "Send `true` to look for a small addition that closes a remaining "
+                "budget. Absent is not `false`."
+            )
         ),
-    ),
-    relationship: str | None = Query(
-        default=None,
-        description=(
-            "Relationship between buyer and recipient. It never removes a product: it "
-            "only decides which of the surviving products comes first. Allowed values: "
-            + ", ".join(SUITABLE_RELATIONSHIPS)
-        ),
-    ),
-    occasion: str | None = Query(
-        default=None, description="Event the gift is for. Allowed values: " + ", ".join(OCCASIONS)
-    ),
-    use_case: list[str] | None = Query(
-        default=None,
-        description=(
-            "Situations in which the product is used. Accepts several values, which are "
-            "alternatives and not accumulated points.\n" + _definitions_of("use_case")
-        ),
-    ),
-    functional_family: list[str] | None = Query(
-        default=None,
-        description=(
-            "The work the object does. Accepts several values, which are alternatives "
-            "and not accumulated points.\n" + _definitions_of("functional_family")
-        ),
-    ),
-    buyer_knows_recipient: bool | None = Query(
-        default=None,
-        description=(
-            "Whether the buyer knows the recipient well. Absent and `false` behave the "
-            "same and keep the precaution; `true` removes it. Absent is not `false`."
-        ),
-    ),
-    product_type: str | None = Query(default=None, description=PRODUCT_TYPE_DESCRIPTION),
-    category: str | None = Query(
-        default=None, description="Catalog category. Allowed values: " + ", ".join(CATEGORIES)
-    ),
-    subcategory: str | None = Query(default=None, description="Catalog subcategory."),
-    brand: str | None = Query(default=None, description="Exact brand. It does not admit degree."),
-    color: str | None = Query(default=None, description="Exact colour. Blue is not almost blue."),
-    material: str | None = Query(default=None, description="Exact material."),
-    max_shipping_days: int | None = Query(
-        default=None, description="Maximum acceptable delivery time, in days."
-    ),
-    gift_wrap_required: bool | None = Query(
-        default=None,
-        description=(
-            "Send `true` only when the customer asked for gift wrapping. Absent is not "
-            "`false`: absence is a state of its own and is never claimed as a preference."
-        ),
-    ),
-    stocking_filler: bool | None = Query(
-        default=None,
-        description=(
-            "Send `true` to look for a small addition that closes a remaining budget. "
-            "Absent is not `false`."
-        ),
-    ),
-    limit: int = Query(default=8, description="Products to return, 1 to 8."),
+    ] = None,
+    limit: Annotated[int, Query(description="Products to return, 1 to 8.")] = 8,
 ) -> Any:
     minimum, maximum, _ = LIMITS_BY_OPERATION["find_products_by_criteria"]
     if not (minimum <= limit <= maximum):
@@ -473,6 +557,7 @@ async def find_products_by_criteria(
     response_model=GetRelatedProductsResponse,
     response_model_exclude_none=True,
     dependencies=[Depends(catalog_credential)],
+    responses=ACCESS_RESPONSES,
     description=(
         "Returns products related to a product the customer has in mind, or to a "
         "sufficiently described product intention. Use `pairs_with` for complementary "
@@ -495,56 +580,42 @@ async def find_products_by_criteria(
     ),
 )
 async def get_related_products(
-    relation: Literal["alternative_to", "pairs_with"] | None = Query(
-        default=None,
-        description=(
-            "Which relation to walk. It is the only required parameter: without it the "
-            "operation has no meaning."
+    relation: Annotated[
+        Literal["alternative_to", "pairs_with"] | None,
+        Query(
+            description=(
+                "Which relation to walk. It is the only required parameter: without it "
+                "the operation has no meaning."
+            )
         ),
-    ),
-    product_id: str | None = Query(
-        default=None,
-        description=(
-            "The source product. It is not a privileged input, it is one more "
-            "criterion — but `pairs_with` cannot start without it."
+    ] = None,
+    product_id: Annotated[
+        str | None,
+        Query(
+            description=(
+                "The source product. It is not a privileged input, it is one more "
+                "criterion — but `pairs_with` cannot start without it."
+            )
         ),
-    ),
-    product_type: str | None = Query(default=None, description=PRODUCT_TYPE_DESCRIPTION),
-    functional_family: list[str] | None = Query(
-        default=None, description="The work the object being substituted does."
-    ),
-    use_case: list[str] | None = Query(
-        default=None, description="Situations in which the object being substituted is used."
-    ),
-    occasion: str | None = Query(default=None, description="Event the gift is for."),
-    recipient: Literal["her", "him", "couple", "kids"] | None = Query(
-        default=None, description="Who receives the gift."
-    ),
-    relationship: str | None = Query(
-        default=None, description="Relationship between buyer and recipient."
-    ),
-    category: str | None = Query(default=None, description="Catalog category."),
-    subcategory: str | None = Query(default=None, description="Catalog subcategory."),
-    brand: str | None = Query(default=None, description="Exact brand."),
-    color: str | None = Query(default=None, description="Exact colour."),
-    material: str | None = Query(default=None, description="Exact material."),
-    max_shipping_days: int | None = Query(
-        default=None, description="Maximum acceptable delivery time, in days."
-    ),
-    gift_wrap_required: bool | None = Query(
-        default=None, description="A hard boundary that must not be lost when walking a relation."
-    ),
-    max_price: float | None = Query(default=None, description="Upper price boundary, in EUR."),
-    min_price: float | None = Query(
-        default=None, description="Lower price boundary. This is how an upsell is requested."
-    ),
-    target_price: float | None = Query(
-        default=None, description="Approximate price. Opens a band of ±20 % around it."
-    ),
-    buyer_knows_recipient: bool | None = Query(
-        default=None, description="Whether the buyer knows the recipient well."
-    ),
-    limit: int = Query(default=3, description="Products to return, 1 to 5."),
+    ] = None,
+    product_type: ProductType = None,
+    functional_family: FunctionalFamilyCriterion = None,
+    use_case: UseCaseCriterion = None,
+    occasion: Occasion = None,
+    recipient: Recipient = None,
+    relationship: Relationship = None,
+    category: Category = None,
+    subcategory: Subcategory = None,
+    brand: Brand = None,
+    color: Color = None,
+    material: Material = None,
+    max_shipping_days: MaxShippingDays = None,
+    gift_wrap_required: GiftWrapRequired = None,
+    max_price: MaxPrice = None,
+    min_price: MinPrice = None,
+    target_price: TargetPrice = None,
+    buyer_knows_recipient: BuyerKnowsRecipient = None,
+    limit: Annotated[int, Query(description="Products to return, 1 to 5.")] = 3,
 ) -> Any:
     if relation is None:
         return recoverable("invalid_parameter", parameter="relation")
@@ -588,19 +659,28 @@ async def get_related_products(
     if relation == "alternative_to" and anchor is None and not has_intention:
         return recoverable("missing_anchor", relation=relation)
 
-    universe = selection.restrict_to_exact_match(
-        catalog.all_products(), kind_ if anchor is None else None
-    )
+    # The exact-match restriction of `find_products_by_criteria` **does not
+    # propagate here** (v34 → v35). In this operation `product_type` is the anchor
+    # of the relation — the object to be substituted — and the answer may well be
+    # another type: that is precisely what a substitute is.
+    if anchor is None and kind_:
+        criteria["product_type"] = kind_
     chosen = selection.related_products(
-        universe, relation, anchor, criteria, limit, GENDER_SPECIFIC_TYPES, QUALITY_BY_PRODUCT
+        catalog.all_products(),
+        relation,
+        anchor,
+        criteria,
+        limit,
+        GENDER_SPECIFIC_TYPES,
+        QUALITY_BY_PRODUCT,
     )
 
     results_ = []
     for product in chosen:
         kind = None
         if relation == "alternative_to":
-            # Para una relación explícita es el value_ persistido; para una
-            # derivada, `same_function` de forma determinista.
+            # For an explicit relation it is the persisted value; for a derived
+            # one, `same_function`, deterministically.
             explicit = (
                 catalog.relation_type_of(anchor.product_id, product.product_id) if anchor else None
             )
@@ -608,8 +688,6 @@ async def get_related_products(
         results_.append(RelatedProduct(**vars(product), relation_type=kind))
 
     understood = dict(criteria) if anchor is None else None
-    if understood is not None and kind_:
-        understood["product_type"] = kind_
     return GetRelatedProductsResponse(results=results_, query_understood=understood)
 
 
@@ -618,6 +696,7 @@ async def get_related_products(
     operation_id="get_product_details",
     response_model=GetProductDetailsResponse,
     dependencies=[Depends(catalog_credential)],
+    responses=ACCESS_RESPONSES,
     description=(
         "Returns the complete catalog representation of one identified product. Use "
         "when the customer explicitly refers to a known product, or when a direct "
@@ -629,7 +708,9 @@ async def get_related_products(
     ),
 )
 async def get_product_details(
-    product_id: str = Query(description="The canonical identifier of the product."),
+    product_id: Annotated[
+        str, Query(description="The canonical identifier of the product.")
+    ],
 ) -> Any:
     product = catalog.by_id(product_id)
     if product is None:
@@ -638,7 +719,7 @@ async def get_product_details(
 
 
 # --------------------------------------------------------------------------
-# Fuera del contrato
+# Outside the contract
 # --------------------------------------------------------------------------
 
 
@@ -648,7 +729,7 @@ async def get_product_details(
     dependencies=[Depends(diagnostics_credential)],
 )
 async def load_report() -> dict:
-    """El informe de calidad de la carga. No forma parte de la especificación."""
+    """The load quality report. It is not part of the specification."""
     products = catalog.all_products()
     return {
         "products": len(products),
@@ -666,19 +747,20 @@ async def load_report() -> dict:
 
 
 # --------------------------------------------------------------------------
-# La especificación
+# The specification
 # --------------------------------------------------------------------------
 
 _specification: dict | None = None
 
 
 def openapi_specification() -> dict:
-    """Publica la especificación con el esquema de seguridad declarado.
+    """Publish the specification with the security scheme declared.
 
-    Los vocabularios cerrados viajan ya en los `enum` y en las descripciones de
-    cada parámetro, que es donde el modelo los lee. **`product_type` no lleva
-    `enum` a propósito**: es el único vocabulary que crece con el inventario, y
-    en el contrato es text_ libre resuelto por aliases_.
+    Closed vocabularies already travel in the `enum` values and in the
+    description of each parameter, which is where the model reads them.
+    **`product_type` carries no `enum` on purpose**: it is the only vocabulary
+    that grows with the inventory, and in the contract it is free text resolved
+    by aliases.
     """
     global _specification
     if _specification is not None:
@@ -694,6 +776,14 @@ def openapi_specification() -> dict:
         "CatalogApiKey": {"type": "apiKey", "in": "header", "name": HEADER_NAME}
     }
     specification["security"] = [{"CatalogApiKey": []}]
+    # 422 does not exist in this contract: FastAPI declares it by default, but
+    # every foreseeable validation error travels as 200 with `error_type` (B5.3).
+    for path_ in specification.get("paths", {}).values():
+        for method_ in path_.values():
+            method_.get("responses", {}).pop("422", None)
+    specification.get("components", {}).get("schemas", {}).pop("HTTPValidationError", None)
+    specification.get("components", {}).get("schemas", {}).pop("ValidationError", None)
+
     _specification = specification
     return specification
 

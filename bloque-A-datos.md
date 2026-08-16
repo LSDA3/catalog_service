@@ -348,11 +348,23 @@ El disparador habitual es **un commit de una versión nueva de `data/catalog.csv
 | Qué ha cambiado en el commit | Campos propios · `enrich.py` | Relaciones · `relate.py` |
 |---|---|---|
 | **Solo `data/catalog.csv`** | **Incremental**: únicamente los productos canónicos sin entrada | **Completo**, siempre |
-| **`data/vocabularies.yaml`** | **Completo: se reclasifican los 150** | **Completo**, siempre |
+| **`data/vocabularies.yaml`** · alta automática de un `product_type` que trae un producto nuevo | **Incremental**: solo los productos sin entrada | **Completo**, siempre |
+| **`data/vocabularies.yaml`** · cualquier cambio de criterio | **Completo: se reclasifican los 150** | **Completo**, siempre |
 | **`prompts/enrich.md`** | **Completo: se reclasifican los 150** | **Completo**, siempre |
 | **`prompts/relate.md`** | Incremental, si el vocabulario y `enrich.md` siguen iguales | **Completo**, siempre |
 
 > **La incrementalidad de los campos propios solo es legítima cuando el criterio con el que se clasificó no ha cambiado.** El criterio son dos ficheros: **el vocabulario y el prompt del clasificador**. Si cualquiera de los dos cambia, los productos ya clasificados lo fueron con otro criterio, y dejar sus valores intactos mezcla dos clasificaciones distintas dentro del mismo artefacto.
+
+**Las dos clases de cambio en `vocabularies.yaml`, que significan cosas opuestas.**
+
+| Cambio | Qué significa | Qué obliga |
+|---|---|---|
+| **Se da de alta un `product_type` nuevo** porque un producto nuevo trae un objeto que el vocabulario no tenía | **Crece el inventario, no cambia el significado del dominio.** Ninguno de los 150 ya clasificados pasa a ser ese tipo por el hecho de que ahora exista | **Nada.** No se reclasifica, y **`vocabulary_version` no sube** |
+| **Se añade, se retira o se redefine un valor de un vocabulario cerrado**; se cambia la definición o los alias de un `product_type` existente; desaparece un tipo | **Cambia el criterio.** Los productos ya clasificados lo fueron con el significado anterior | **Reclasificación completa de los 150**, y sube `vocabulary_version` |
+
+**Y esta distinción no es cosmética: sin ella el mecanismo se muerde la cola.** `enrich.py` escribe el tipo nuevo en el vocabulario, así que en la ejecución siguiente vería `vocabularies.yaml` modificado y dispararía una reclasificación completa **de todos los productos, cada vez que entra uno nuevo**. El pipeline se estaría reclasificando a sí mismo sin que nadie hubiera cambiado ningún criterio.
+
+**Cómo se distingue, y es determinista:** se compara el vocabulario del commit con el de la revisión anterior. Si lo único que ha ocurrido es que hay claves nuevas en `product_type` —y ninguna de las anteriores ha cambiado, ni la versión, ni ningún vocabulario cerrado—, el criterio es el mismo.
 
 **Por qué el vocabulario obliga a reclasificar aunque no haya un solo producto nuevo.** Es lo que A4.11.7 ya exige y aquí se hace operativo: si se añade un valor a `use_case`, hay productos que deberían llevarlo y no lo llevan, porque cuando se clasificaron ese valor no existía. Si se **cambia la definición** de un valor, peor: los productos siguen llevándolo bajo el significado antiguo. En los dos casos el diff del artefacto no delataría nada — el fichero es válido, pasa la puerta, y clasifica mal. Es exactamente la desincronización silenciosa que este bloque evita en todo lo demás.
 
@@ -575,7 +587,7 @@ catalog-service/
 └── README.md
 ```
 
-**Y qué no sube siquiera al repositorio.** `.gitignore` deja fuera el entorno virtual y los ficheros temporales de Python —se regeneran solos y ocupan cientos de megas— y, sobre todo, **`.env` y `*.key`**: un secreto subido a GitHub se considera comprometido aunque se borre después, porque queda en el historial. Es la red de seguridad de B6.5, que ya exige que las credenciales vivan fuera de la imagen y fuera de `fly.toml`.
+**Y qué no sube siquiera al repositorio.** `.gitignore` deja fuera el entorno virtual, los paquetes descargados para trabajar en local y los ficheros temporales de Python —se regeneran solos y ocupan cientos de megas— y, sobre todo, **`.env` y `*.key`**: un secreto subido a GitHub se considera comprometido aunque se borre después, porque queda en el historial. Es la red de seguridad de B6.5, que ya exige que las credenciales vivan fuera de la imagen y fuera de `fly.toml`.
 
 #### Qué viaja al contenedor y qué no
 
@@ -1022,9 +1034,31 @@ Aquí está la diferencia operativa entre un vocabulario **cerrado** y uno **con
 | `suitable_relationships` | Siempre encaja: al menos un valor obligatorio |
 | `use_case` | **No se admite vacío.** Si un producto no encaja en ningún valor, el vocabulario está incompleto: se añade un valor y se reclasifica. Mismo tratamiento que `functional_family` |
 | `functional_family` | **No se admite vacío ni valor comodín.** Si un producto no encaja, el vocabulario está incompleto: se añade un valor y se reclasifica. Un comodín rompería la sustitución, que es justo para lo que existe el campo |
-| `product_type` | **Crece.** Un producto nuevo introduce legítimamente un tipo nuevo, con sus alias |
+| `product_type` | **Crece, y se da de alta solo.** Un producto nuevo introduce legítimamente un tipo nuevo, con su `definicion` y sus alias, que `enrich.py` escribe en el vocabulario en esa misma ejecución. **`vocabulary_version` no sube** |
 
 Esa última fila es la razón de que `product_type` sea el único vocabulario *controlado* y no *cerrado*: los demás describen dimensiones del dominio, que no cambian. `product_type` describe el inventario, que sí.
+
+#### Cómo se da de alta un `product_type` nuevo
+
+**Lo escribe el propio pipeline, en la misma ejecución que lo descubre.** El clasificador devuelve el tipo con su `definicion` y sus alias, `enrich.py` lo añade a `data/vocabularies.yaml`, y el commit resultante viaja a la rama junto con `semantic_layer.json`. Así el artefacto y el vocabulario nunca discrepan: no existe el estado intermedio en el que un producto lleva un tipo que el vocabulario no tiene.
+
+**Lo que impide que el vocabulario se fragmente es el criterio del clasificador, no una revisión.** El diff es visible y puede leerse, pero **no hay aprobación humana obligatoria dentro del flujo**: la arquitectura decidió que el pipeline se cierra solo. Por eso la regla vive en `prompts/enrich.md`, que recibe los tipos existentes con sus definiciones y sus alias, y dice dos cosas sin ambigüedad:
+
+- **reutilizar un tipo existente siempre que represente el mismo objeto**, aunque el producto se llame de otra manera;
+- **crear uno nuevo únicamente cuando ningún tipo existente describa ese concepto.**
+
+> **Proponer `cooking_knife` existiendo `chef_knife` es una clasificación incorrecta, no un crecimiento legítimo.** Parte el vocabulario en dos etiquetas para una sola cosa, y desde ahí la restricción de coincidencia exacta devuelve la mitad de lo que le corresponde.
+
+**Y lo que la puerta sí valida, porque es determinista:**
+
+| Comprobación |
+|---|
+| El tipo nuevo tiene `definicion` |
+| Ningún alias resuelve a dos tipos distintos |
+| Ningún tipo en uso ha desaparecido del vocabulario |
+| **No aparecen más tipos nuevos que productos canónicos nuevos** — por construcción cada producto introduce como mucho uno, así que más tipos que productos es invención y no crecimiento |
+
+**Lo que la puerta no puede hacer es decidir si dos nombres significan lo mismo.** Eso no se valida por código, y por eso la protección está donde sí puede estar: en el criterio del clasificador.
 
 #### A4.11.7 Versionado del vocabulario
 
@@ -1032,7 +1066,7 @@ Esa última fila es la razón de que `product_type` sea el único vocabulario *c
 
 **Subir de versión obliga a reclasificar el catálogo completo.** Si se añade `home_office` a `use_case`, hay productos ya clasificados que deberían llevarlo y no lo llevan. Reclasificar los 150 cuesta céntimos, así que no hay motivo para no hacerlo.
 
-**Y no es una recomendación: es una rama del pipeline.** A3.6 lo recoge — cuando el commit toca `data/vocabularies.yaml`, la clasificación de campos propios **deja de ser incremental** y se ejecuta completa, haya o no productos nuevos. Lo mismo con `prompts/enrich.md`, que es la otra mitad del criterio.
+**Y no es una recomendación: es una rama del pipeline.** A3.6 lo recoge — cuando el commit **cambia el criterio** en `data/vocabularies.yaml`, la clasificación de campos propios **deja de ser incremental** y se ejecuta sobre los 150. **El alta automática de un `product_type` no es un cambio de criterio** y no dispara nada: crece el inventario, no cambia el significado del dominio.
 
 La puerta de cobertura comprueba también que la versión de vocabulario registrada en `semantic_layer.json` coincide con la del fichero. Si no coinciden, el build falla: es el mismo invariante de completitud aplicado al vocabulario.
 
@@ -1380,6 +1414,7 @@ Comprobación de que el modelo de datos sostiene los seis escenarios que el brie
 
 | Versión | Cambio |
 |---|---|
+| v59 → v60 | **Se cierra cómo se da de alta un `product_type` nuevo, que era el último hueco de implementación.** Lo escribe **`enrich.py` en la misma ejecución que lo descubre**, con la `definicion` y los alias que devuelve el clasificador, y **`vocabulary_version` no sube**: crece el inventario, no cambia el significado del dominio. **A3.6 se corrige en consecuencia**, porque su regla anterior —*"si cambia `vocabularies.yaml`, reclasificación completa"*— habría hecho que el pipeline se reclasificara a sí mismo entero cada vez que entra un producto nuevo. Quedan distinguidas las **dos clases de cambio** en ese fichero: el alta de un tipo no fuerza nada; cualquier cambio de criterio sigue forzando los 150. **La fragmentación no se evita con revisión humana** —el flujo no la tiene— sino con el criterio del clasificador, que recibe los tipos existentes y tiene la instrucción de reutilizar antes que crear: `cooking_knife` existiendo `chef_knife` es una clasificación incorrecta. La puerta valida lo determinista: definición, alias sin ambigüedad, ningún tipo en uso desaparecido, y **no más tipos nuevos que productos nuevos** |
 | v58 → v59 | **Se escriben los nombres que la especificación publica y que el documento no tenía.** B4 describía los envelopes con su forma JSON, y un ejemplo no necesita nombre; en cuanto se publican en un contrato legible por máquina, el **nombre del esquema es lo que lee indigo.ai**. Quedan fijados: cada respuesta se llama **como su operación** —`GetCategoriesResponse` y las otras cuatro— y se añade **un único nombre nuevo, `RelatedProduct`**, para el elemento de relacionados, que es un `Product` más su `relation_type` y por eso no puede llamarse `Product`. **Las rutas tampoco estaban**: son el `operation_id`, sin más, para que ruta, operación y esquema digan lo mismo. No cambia ninguna forma, ningún parámetro ni ninguna regla |
 | v57 → v58 | **El árbol de A3.9 gana `.gitignore`.** Era el segundo fichero que hay que crear para construir y que el mapa del repositorio no nombraba, después de `requirements.txt`. Deja fuera el entorno virtual y los temporales de Python, y sobre todo **`.env` y `*.key`**: es la red de seguridad de B6.5 contra subir una credencial por descuido, que en GitHub queda en el historial aunque se borre. **No cambia qué entra en la imagen** ni ninguna decisión de A3 |
 | v56 → v57 | **Se completa dónde exige cada operación `is_standalone_gift`, con una tabla de las cinco.** La versión anterior cerró `pairs_with`; quedaban fuera la navegación y el detalle, y la navegación **contradecía una cifra ya medida**: B4.7 declara 20 en Kitchen & Dining descontando solo los dos agotados, y con el corte aplicado salían 19. Queda escrito: **exigen `is_standalone_gift` la búsqueda y `alternative_to`; no lo exigen `pairs_with`, la navegación y el detalle**. `in_stock` sigue sin excepción. No cambia ningún parámetro ni ninguna forma de respuesta. Registro **B2ah** |

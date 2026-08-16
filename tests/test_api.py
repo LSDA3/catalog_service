@@ -1,8 +1,8 @@
-"""Pruebas de la frontera de acceso, del límite de tasa y del contrato publicado.
+"""Tests of the access boundary, the rate limit and the published contract.
 
-Las que necesitan levantar el servicio usan el `TestClient` de FastAPI. Las dos
-credenciales se inyectan por entorno, como en producción: aquí no hay ninguna
-credencial escrita en el código ni en el fichero.
+The ones that need the service up use the `TestClient` of FastAPI. The two
+credentials are injected through the environment, as in production: there is no
+credential written in the code or in this file.
 """
 
 from __future__ import annotations
@@ -17,8 +17,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-CATALOG_KEY = "key_-de-catalog-para-pruebas"
-DIAGNOSTICS_KEY = "key_-de-diagnostico-para-pruebas"
+CATALOG_KEY = "catalog-key-for-tests"
+DIAGNOSTICS_KEY = "diagnostics-key-for-tests"
 os.environ["CATALOG_API_KEY"] = CATALOG_KEY
 os.environ["DIAGNOSTICS_API_KEY"] = DIAGNOSTICS_KEY
 
@@ -46,7 +46,7 @@ def with_catalog(client_, path_, **parameters):
 
 
 # --------------------------------------------------------------------------
-# B6.12 · la frontera de acceso
+# B6.12 · the access boundary
 # --------------------------------------------------------------------------
 
 
@@ -55,7 +55,7 @@ def test_without_credential_answers_401(client_):
 
 
 def test_with_an_unknown_credential_answers_401(client_):
-    response = client_.get("/get_categories", headers={"X-Api-Key": "no-es-ninguna"})
+    response = client_.get("/get_categories", headers={"X-Api-Key": "not-a-real-one"})
     assert response.status_code == 401
 
 
@@ -100,7 +100,7 @@ def test_the_specification_contains_no_credential(client_):
 
 
 # --------------------------------------------------------------------------
-# B6.8 · el límite de tasa
+# B6.8 · the rate limit
 # --------------------------------------------------------------------------
 
 
@@ -133,7 +133,7 @@ def test_the_two_counters_are_independent(client_):
 
 
 # --------------------------------------------------------------------------
-# B4.8 · los envelopes de cada operación
+# B4.8 · the envelope of each operation
 # --------------------------------------------------------------------------
 
 
@@ -148,7 +148,7 @@ def test_the_navigation_carries_total_and_offset(client_):
     body = with_catalog(
         client_, "/get_products_by_category", category="Kitchen & Dining"
     ).json()
-    # 22 en la categoría, 2 agotados: navegar no exige `is_standalone_gift`.
+    # 22 in the category, 2 out of stock: browsing does not require `is_standalone_gift`.
     assert body["total"] == 20
     assert body["offset"] == 0
     assert len(body["results"]) <= 8
@@ -234,7 +234,7 @@ def test_no_operation_returns_more_than_eight(client_):
 
 
 # --------------------------------------------------------------------------
-# Los errores recuperables viajan con HTTP 200
+# Recoverable errors travel with HTTP 200
 # --------------------------------------------------------------------------
 
 
@@ -291,7 +291,7 @@ def test_the_complement_arrives_though_not_a_gift_on_its_own(client_):
 
 
 # --------------------------------------------------------------------------
-# B7 · las descripciones son las de la memoria, literales
+# B7 · the descriptions are the ones in the memory, literally
 # --------------------------------------------------------------------------
 
 FRASES_DE_B7 = (
@@ -325,17 +325,17 @@ def test_the_descriptions_are_the_ones_of_b7(frase):
 
 
 def test_vocabularies_travel_with_their_definitions_in_each_parameter(client_):
-    """Las definiciones viven en el parámetro que las necesita, no en un schema suelto.
+    """Definitions live in the parameter that needs them, not in a loose schema.
 
-    Un `enum` de treinta values_ sin definiciones obliga al modelo a adivinar qué
-    significa cada one_, y un schema aparte en `components` no lo lee al construir
-    la llamada: lo que lee es la descripción del parámetro.
+    An `enum` of thirty values without definitions forces the model to guess what
+    each one means, and a separate schema in `components` is not what it reads
+    when building the call: what it reads is the description of the parameter.
     """
-    parameters = _por_nombre(client_.get("/openapi.json").json(), "find_products_by_criteria")
+    parameters = _by_name(client_.get("/openapi.json").json(), "find_products_by_criteria")
     for field in ("use_case", "functional_family"):
         description_text = parameters[field]["description"]
         assert "`cooking`" in description_text or "`" in description_text
-        assert len(description_text) > 200  # lleva las definiciones, no solo el nombre
+        assert len(description_text) > 200  # it carries the definitions, not just the name
     assert "aliases" in parameters["product_type"]["description"] or "alias" in (
         parameters["product_type"]["description"]
     )
@@ -364,36 +364,36 @@ def test_the_five_operations_are_published(client_):
 
 
 # --------------------------------------------------------------------------
-# La especificación publica los parámetros · lo único que indigo.ai lee
+# The specification publishes the parameters · the only thing indigo.ai reads
 # --------------------------------------------------------------------------
 
 
-def _por_nombre(specification, operation_id) -> dict:
+def _by_name(specification, operation_id) -> dict:
     for path_ in specification["paths"].values():
         for method_ in path_.values():
             if method_.get("operationId") == operation_id:
                 return {p["name"]: p for p in method_.get("parameters", [])}
-    raise AssertionError(f"{operation_id} no está publicada")
+    raise AssertionError(f"{operation_id} is not published")
 
 
 def _parametros(specification, operation_id) -> set[str]:
-    """Los parámetros de negocio: los que viajan en la query.
+    """The business parameters: the ones that travel in the query.
 
-    `X-Api-Key` también se publica, y debe publicarse —es parte del contrato—,
-    pero es una cabecera y no un criterio: se cuenta aparte.
+    `X-Api-Key` is published too, and must be — it is part of the contract — but
+    it is a header and not a criterion: it is counted apart.
     """
     return {
-        nombre
-        for nombre, parametro in _por_nombre(specification, operation_id).items()
-        if parametro.get("in") == "query"
+        name
+        for name, parameter in _by_name(specification, operation_id).items()
+        if parameter.get("in") == "query"
     }
 
 
 def _cabeceras(specification, operation_id) -> set[str]:
     return {
-        nombre
-        for nombre, parametro in _por_nombre(specification, operation_id).items()
-        if parametro.get("in") == "header"
+        name
+        for name, parameter in _by_name(specification, operation_id).items()
+        if parameter.get("in") == "header"
     }
 
 
@@ -462,13 +462,13 @@ def test_product_type_is_not_an_enum(client_):
             for method_ in path_.values():
                 if method_.get("operationId") != operation:
                     continue
-                for parametro in method_["parameters"]:
-                    if parametro["name"] == "product_type":
-                        assert "enum" not in str(parametro["schema"])
+                for parameter in method_["parameters"]:
+                    if parameter["name"] == "product_type":
+                        assert "enum" not in str(parameter["schema"])
 
 
 def test_closed_vocabularies_do_travel_with_their_definitions(client_):
-    parameters = _por_nombre(client_.get("/openapi.json").json(), "find_products_by_criteria")
+    parameters = _by_name(client_.get("/openapi.json").json(), "find_products_by_criteria")
     assert "cooking" in parameters["use_case"]["description"]
     assert parameters["recipient"]["description"]
 
@@ -514,7 +514,7 @@ def test_the_related_one_carries_relation_type_in_the_product_itself(client_):
 
 
 def test_each_operation_is_named_the_same_in_the_three_places(client_):
-    """La path_, el `operation_id` y el schema de response, con el mismo nombre."""
+    """The route, the `operation_id` and the response schema, with the same name."""
     specification = client_.get("/openapi.json").json()
     for path_, metodos in specification["paths"].items():
         for method_ in metodos.values():
@@ -528,7 +528,19 @@ def test_each_operation_is_named_the_same_in_the_three_places(client_):
 
 def test_no_published_schema_carries_an_invented_name(client_):
     schemas = set(client_.get("/openapi.json").json()["components"]["schemas"])
-    agreed = {"Product", "ExcludedProduct", "CategorySummary", "NotApplied", "RelatedProduct"}
+    agreed = {
+        "Product",
+        "ExcludedProduct",
+        "CategorySummary",
+        "NotApplied",
+        "RelatedProduct",
+        "TechnicalFailure",
+        # The closed vocabularies of B7.10, published as real enums
+        "UseCase",
+        "FunctionalFamily",
+        "GiftRisk",
+        "SuitableRelationship",
+    }
     derived = {
         "".join(p.capitalize() for p in operation.split("_")) + "Response"
         for operation in (
@@ -539,6 +551,113 @@ def test_no_published_schema_carries_an_invented_name(client_):
             "get_product_details",
         )
     }
-    extra_ = {e for e in schemas if not e.startswith("HTTPValidationError")}
-    extra_ -= agreed | derived | {"ValidationError"}
+    extra_ = schemas - agreed - derived
     assert not extra_, extra_
+
+
+# --------------------------------------------------------------------------
+# B7.10 · closed vocabularies as real enums, `product_type` as free text
+# --------------------------------------------------------------------------
+
+
+def test_the_closed_vocabularies_are_published_as_enums(client_):
+    schemas = client_.get("/openapi.json").json()["components"]["schemas"]
+    assert len(schemas["UseCase"]["enum"]) == 30
+    assert len(schemas["FunctionalFamily"]["enum"]) == 31
+    assert schemas["GiftRisk"]["enum"] == ["high_commitment", "low", "taste_dependent"]
+    assert len(schemas["SuitableRelationship"]["enum"]) == 5
+
+
+def test_the_enum_parameters_reference_those_schemas(client_):
+    parameters = _by_name(client_.get("/openapi.json").json(), "find_products_by_criteria")
+    assert "UseCase" in str(parameters["use_case"]["schema"])
+    assert "FunctionalFamily" in str(parameters["functional_family"]["schema"])
+    assert "SuitableRelationship" in str(parameters["relationship"]["schema"])
+
+
+def test_the_shared_criteria_are_described_the_same_in_both_operations(client_):
+    specification = client_.get("/openapi.json").json()
+    search = _by_name(specification, "find_products_by_criteria")
+    related = _by_name(specification, "get_related_products")
+    for name in (
+        "product_type",
+        "functional_family",
+        "use_case",
+        "category",
+        "subcategory",
+        "max_price",
+        "min_price",
+        "target_price",
+    ):
+        assert search[name]["description"] == related[name]["description"], name
+
+
+# --------------------------------------------------------------------------
+# B5.3 · foreseeable validation errors travel as 200
+# --------------------------------------------------------------------------
+
+
+def test_a_value_outside_an_enum_is_a_recoverable_error(client_):
+    response = with_catalog(client_, "/find_products_by_criteria", use_case="not_a_situation")
+    assert response.status_code == 200
+    assert response.json()["error_type"] == "invalid_parameter"
+
+
+def test_a_malformed_number_is_a_recoverable_error(client_):
+    response = with_catalog(client_, "/find_products_by_criteria", max_price="cheap")
+    assert response.status_code == 200
+    assert response.json()["error_type"] == "invalid_parameter"
+
+
+def test_no_operation_declares_a_422(client_):
+    specification = client_.get("/openapi.json").json()
+    for path_ in specification["paths"].values():
+        for method_ in path_.values():
+            assert "422" not in method_["responses"]
+
+
+def test_every_operation_declares_401_403_429_and_5xx(client_):
+    specification = client_.get("/openapi.json").json()
+    for path_ in specification["paths"].values():
+        for method_ in path_.values():
+            assert {"401", "403", "429", "503"} <= set(method_["responses"])
+
+
+# --------------------------------------------------------------------------
+# B7.8 · the response fields that condition what the agent may claim
+# --------------------------------------------------------------------------
+
+
+def test_the_response_fields_of_b7_8_carry_their_description(client_):
+    schemas = client_.get("/openapi.json").json()["components"]["schemas"]
+    assert schemas["FindProductsByCriteriaResponse"]["properties"]["results"]["description"]
+    assert schemas["FindProductsByCriteriaResponse"]["properties"]["excluded"]["description"]
+    assert schemas["FindProductsByCriteriaResponse"]["properties"]["not_applied"]["description"]
+    assert schemas["FindProductsByCriteriaResponse"]["properties"]["query_understood"][
+        "description"
+    ]
+    assert schemas["GetProductsByCategoryResponse"]["properties"]["total"]["description"]
+    assert schemas["GetProductsByCategoryResponse"]["properties"]["offset"]["description"]
+    assert schemas["ExcludedProduct"]["properties"]["exclusion_reason"]["description"]
+    assert schemas["RelatedProduct"]["properties"]["relation_type"]["description"]
+    for field in ("gift_risk", "is_standalone_gift", "in_stock", "stocking_filler",
+                  "pairs_with", "alternative_to"):
+        assert schemas["Product"]["properties"][field]["description"], field
+
+
+# --------------------------------------------------------------------------
+# v34 → v35 · the exact-match restriction does not reach related products
+# --------------------------------------------------------------------------
+
+
+def test_related_products_may_be_of_another_type(client_):
+    body = with_catalog(
+        client_, "/get_related_products", relation="alternative_to", product_type="chef_knife"
+    ).json()
+    types = {p["product_type"] for p in body["results"]}
+    assert types - {"chef_knife"}, "a substitute is very often another object"
+
+
+def test_but_the_search_does_restrict_to_the_exact_type(client_):
+    body = with_catalog(client_, "/find_products_by_criteria", product_type="chef_knife").json()
+    assert {p["product_type"] for p in body["results"]} <= {"chef_knife"}

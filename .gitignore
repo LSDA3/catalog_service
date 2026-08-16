@@ -1,16 +1,17 @@
-# Entorno virtual local
+# Local virtual environment and downloaded packages
 .venv/
 venv/
+wheels/
 
 # Python
 __pycache__/
 *.py[cod]
 .pytest_cache/
 
-# Editores y sistema
+# Editors and operating system
 .vscode/
 .DS_Store
 
-# Nunca, bajo ningún concepto
+# Never, under any circumstances
 .env
 *.key

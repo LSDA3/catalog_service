@@ -312,8 +312,29 @@ def _alternative_levels(
     """
     if anchor is None:
         # With no source product, what defines the alternative is the accumulated
-        # intention: a single level, the one of the semantic criteria.
-        return [list(products)]
+        # intention: a single level, the one of the semantic criteria. The requested
+        # `product_type` describes **the object to be substituted**, so it does not
+        # restrict the answer — a substitute is very often another type (v34 → v35).
+        requested_type = criteria.get("product_type")
+        if not requested_type:
+            return [list(products)]
+        same_type = [p for p in products if p.product_type == requested_type]
+        family = {
+            value
+            for p in same_type
+            for value in p.functional_family
+        }
+        same_family = [
+            p
+            for p in products
+            if p.product_type != requested_type and set(p.functional_family) & family
+        ]
+        rest = [
+            p
+            for p in products
+            if p.product_type != requested_type and not (set(p.functional_family) & family)
+        ]
+        return [same_type, same_family, rest]
 
     explicit = [p for p in products if p.product_id in anchor.alternative_to]
     already_seen = {p.product_id for p in explicit} | {anchor.product_id}

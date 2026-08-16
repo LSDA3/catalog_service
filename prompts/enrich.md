@@ -28,10 +28,38 @@ necesitan conocer el catálogo entero y las produce `relate.py`.
 
 ## Las reglas, una por campo
 
-**`product_type` — qué objeto es.** El valor más específico que describa el
-objeto, tomado del vocabulario cerrado. Si ninguno encaja, **se propone uno
-nuevo**: `product_type` es el único vocabulario abierto, y un producto nuevo
-introduce legítimamente un tipo nuevo. No se fuerza un tipo aproximado.
+**`product_type` — qué objeto es.**
+
+Recibes **los tipos existentes con su definición y sus alias**. La regla es
+inequívoca y tiene dos mitades:
+
+1. **Reutiliza un tipo existente siempre que represente el mismo objeto.** Da
+   igual que el nombre del producto use otras palabras: si ya hay un tipo para
+   ese concepto, es ese. Un cuchillo de cocinero es `chef_knife` aunque el
+   producto se llame *"cooking knife"*.
+2. **Crea uno nuevo únicamente cuando ningún tipo existente describa ese
+   concepto.** No cuando el nombre no coincida, no cuando la marca sea otra, no
+   cuando el material cambie: solo cuando el objeto no exista en el vocabulario.
+
+**Proponer `cooking_knife` existiendo `chef_knife` es una clasificación
+incorrecta, no un crecimiento legítimo.** Parte el vocabulario en dos etiquetas
+para una sola cosa, y a partir de ahí la búsqueda exacta devuelve la mitad del
+catálogo que le corresponde.
+
+Cuando de verdad haga falta uno nuevo, se devuelve así, además de los campos
+propios:
+
+```json
+"new_product_type": {
+  "key": "air_fryer",
+  "definicion": "Freidora de aire caliente para cocinar sin aceite",
+  "aliases": ["air fryer", "freidora de aire"]
+}
+```
+
+En minúsculas y con guiones bajos, con su definición en una línea y con los
+alias por los que un cliente lo pediría. **Nunca se fuerza un tipo aproximado**,
+y nunca se propone uno nuevo por comodidad.
 
 **`functional_family` — qué trabajo hace.** Admite varios valores: un mismo
 objeto puede hacer más de un trabajo. **Nunca se deja vacío**, y **no existe

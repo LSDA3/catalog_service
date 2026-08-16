@@ -1,14 +1,14 @@
-"""Recalcula las relations sobre el catálogo full_run. Solo se ejecuta en CI.
+"""Recomputes the relations over the whole catalog. It only runs in CI.
 
-**Nunca es incremental**, y no por comodidad: una relación necesita conocer el
-catálogo entero, y un product nuevo puede obligar a revisar las de products que
-ya estaban. Si entra un cuchillo de chef nuevo, la piedra de afilar que hoy
-apunta al viejo puede tener que apuntar a los dos.
+**It is never incremental**, and not out of convenience: a relation needs to know
+the whole catalog, and a new product may force revisiting the relations of
+products that were already there. If a new chef's knife arrives, the sharpening
+stone that points at the old one may have to point at both.
 
-Escribe cada relación **una sola vez**, bajo el `product_id` lexicográficamente
-smaller de la pair. Que el other extremo la conozca es trabajo del loader.
+It writes each relation **once**, under the lexicographically smaller
+`product_id` of the pair. Making the other end aware of it is the loader's job.
 
-Este script **no viaja al contenedor**.
+This script **does not travel to the container**.
 """
 
 from __future__ import annotations
@@ -26,13 +26,13 @@ import normalization  # noqa: E402
 RELATION_TYPE = {"equivalent", "same_function"}
 
 
-def _card(product: normalization.CanonicalProduct, entrada: dict) -> dict:
-    """Lo que el modelo necesita ver de cada product para relacionarlo."""
+def _card(product: normalization.CanonicalProduct, entry: dict) -> dict:
+    """What the model needs to see of each product in order to relate it."""
     return {
         "product_id": product.product_id,
         "name": product.name,
-        "product_type": entrada.get("product_type"),
-        "functional_family": entrada.get("functional_family"),
+        "product_type": entry.get("product_type"),
+        "functional_family": entry.get("functional_family"),
         "price_eur": product.price,
         "description": product.description,
     }
@@ -54,11 +54,11 @@ def request_relations(catalog: list[dict], prompt: str) -> dict:
 
 
 def normalize_relations(proposals: dict, canonicos: set[str]) -> dict[str, dict]:
-    """Deja una sola escritura por pair, bajo el identificador smaller.
+    """Leave a single write per pair, under the smaller identifier.
 
-    Lo que llega puede traer la misma pair en los dos sentidos o repetida: aquí
-    se reduce a la forma que la puerta de cobertura exige, sin puntuar nada y sin
-    inventar ninguna relación que no venga propuesta.
+    What arrives may carry the same pair in both directions or repeated: here it
+    is reduced to the shape the coverage gate demands, without scoring anything
+    and without inventing a relation that was not proposed.
     """
     pairs: dict[tuple[str, str], str] = {}
     complements: set[tuple[str, str]] = set()
@@ -79,9 +79,9 @@ def normalize_relations(proposals: dict, canonicos: set[str]) -> dict[str, dict]
             if other not in canonicos or other == product_id:
                 continue
             if kind not in RELATION_TYPE:
-                kind = "same_function"  # ante la duda, la etiqueta segura
+                kind = "same_function"  # when in doubt, the safe label
             pair = tuple(sorted((product_id, other)))
-            # Si los dos extremos discrepan, manda la más conservadora.
+            # If the two ends disagree, the more conservative one wins.
             previous = pairs.get(pair)
             pairs[pair] = (
                 "equivalent" if previous == "equivalent" and kind == "equivalent" else
@@ -102,7 +102,7 @@ def normalize_relations(proposals: dict, canonicos: set[str]) -> dict[str, dict]
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Relaciones del catálogo full_run")
+    parser = argparse.ArgumentParser(description="Relations of the whole catalog")
     parser.add_argument("--csv", required=True)
     parser.add_argument("--semantic", required=True)
     parser.add_argument("--vocabularies", default="data/vocabularies.yaml")
@@ -114,7 +114,7 @@ def main() -> int:
     entries: dict = layer["products"]
 
     product_types_by_id = {
-        product_id: entrada.get("product_type") for product_id, entrada in entries.items()
+        product_id: entry.get("product_type") for product_id, entry in entries.items()
     }
     canonicos, _ = normalization.canonicalize(
         options.csv, options.vocabularies, product_types_by_id
@@ -125,9 +125,9 @@ def main() -> int:
     proposals = request_relations(catalog, prompt)
 
     relations = normalize_relations(proposals, {p.product_id for p in canonicos})
-    for product_id, entrada in entries.items():
-        entrada["pairs_with"] = relations[product_id]["pairs_with"]
-        entrada["alternative_to"] = relations[product_id]["alternative_to"]
+    for product_id, entry in entries.items():
+        entry["pairs_with"] = relations[product_id]["pairs_with"]
+        entry["alternative_to"] = relations[product_id]["alternative_to"]
 
     layer["products"] = dict(sorted(entries.items()))
     path_.write_text(json.dumps(layer, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -135,7 +135,7 @@ def main() -> int:
     written = sum(
         len(e["pairs_with"]) + len(e["alternative_to"]) for e in entries.values()
     )
-    print(f"{written} relations written sobre {len(entries)} products")
+    print(f"{written} relations written over {len(entries)} products")
     return 0
 
 
