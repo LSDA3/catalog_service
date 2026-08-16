@@ -29,7 +29,7 @@ def client_():
 
     import api
 
-    return TestClient(api.app)
+    return TestClient(api.app, raise_server_exceptions=False)
 
 
 @pytest.fixture(autouse=True)
@@ -51,12 +51,18 @@ def with_catalog(client_, path_, **parameters):
 
 
 def test_without_credential_answers_401(client_):
-    assert client_.get("/get_categories").status_code == 401
+    response = client_.get("/get_categories")
+    assert response.status_code == 401
+    assert response.json()["error_code"] == "unauthorized"
+    assert response.json()["retryable"] is False
+    assert response.json()["incident_id"]
 
 
 def test_with_an_unknown_credential_answers_401(client_):
     response = client_.get("/get_categories", headers={"X-Api-Key": "not-a-real-one"})
     assert response.status_code == 401
+    assert response.json()["error_code"] == "unauthorized"
+    assert response.json()["retryable"] is False
 
 
 def test_with_the_catalog_credential_answers_200(client_):
@@ -68,11 +74,15 @@ def test_the_catalog_credential_does_not_open_diagnostics(client_):
         "/_diagnostics/load-report", headers={"X-Api-Key": CATALOG_KEY}
     )
     assert response.status_code == 403
+    assert response.json()["error_code"] == "forbidden"
+    assert response.json()["retryable"] is False
 
 
 def test_the_diagnostics_credential_does_not_open_the_catalog(client_):
     response = client_.get("/get_categories", headers={"X-Api-Key": DIAGNOSTICS_KEY})
     assert response.status_code == 403
+    assert response.json()["error_code"] == "forbidden"
+    assert response.json()["retryable"] is False
 
 
 def test_diagnostics_with_its_credential_answers_200(client_):
@@ -109,7 +119,9 @@ def test_the_61st_request_of_the_minute_gets_429(client_):
         assert with_catalog(client_, "/get_categories").status_code == 200, number
     exceeded = with_catalog(client_, "/get_categories")
     assert exceeded.status_code == 429
-    assert exceeded.json()["detail"]["error_code"] == "rate_limited"
+    assert exceeded.json()["error_code"] == "rate_limited"
+    assert exceeded.json()["retryable"] is True
+    assert exceeded.json()["incident_id"]
 
 
 def test_diagnostics_has_its_own_limit(client_):
@@ -124,6 +136,7 @@ def test_diagnostics_has_its_own_limit(client_):
         "/_diagnostics/load-report", headers={"X-Api-Key": DIAGNOSTICS_KEY}
     )
     assert exceeded.status_code == 429
+    assert exceeded.json()["error_code"] == "rate_limited"
 
 
 def test_the_two_counters_are_independent(client_):
@@ -241,19 +254,39 @@ def test_no_operation_returns_more_than_eight(client_):
 def test_a_limit_out_of_range_is_invalid_parameter(client_):
     response = with_catalog(client_, "/find_products_by_criteria", limit=20)
     assert response.status_code == 200
-    assert response.json()["error_type"] == "invalid_parameter"
+    assert response.json() == {
+        "error_type": "invalid_parameter",
+        "parameter": "limit",
+        "received": 20,
+    }
 
 
 def test_a_contradictory_budget_is_conflicting_parameters(client_):
     body = with_catalog(
         client_, "/find_products_by_criteria", min_price=100, max_price=50
     ).json()
-    assert body["error_type"] == "conflicting_parameters"
+    assert body == {
+        "error_type": "conflicting_parameters",
+        "parameter": ["min_price", "max_price"],
+        "received": {"min_price": 100, "max_price": 50},
+    }
 
 
 def test_without_relation_it_is_invalid_parameter(client_):
     body = with_catalog(client_, "/get_related_products").json()
-    assert body["error_type"] == "invalid_parameter"
+    assert body == {"error_type": "invalid_parameter", "parameter": "relation"}
+
+
+def test_negative_shipping_days_is_invalid_parameter(client_):
+    response = with_catalog(
+        client_, "/find_products_by_criteria", max_shipping_days=-2
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "error_type": "invalid_parameter",
+        "parameter": "max_shipping_days",
+        "received": "-2",
+    }
 
 
 def test_pairs_with_without_product_id_is_missing_anchor(client_):
@@ -325,17 +358,11 @@ def test_the_descriptions_are_the_ones_of_b7(frase):
 
 
 def test_vocabularies_travel_with_their_definitions_in_each_parameter(client_):
-    """Definitions live in the parameter that needs them, not in a loose schema.
-
-    An `enum` of thirty values without definitions forces the model to guess what
-    each one means, and a separate schema in `components` is not what it reads
-    when building the call: what it reads is the description of the parameter.
-    """
     parameters = _by_name(client_.get("/openapi.json").json(), "find_products_by_criteria")
     for field in ("use_case", "functional_family"):
         description_text = parameters[field]["description"]
         assert "`cooking`" in description_text or "`" in description_text
-        assert len(description_text) > 200  # it carries the definitions, not just the name
+        assert len(description_text) > 200
     assert "aliases" in parameters["product_type"]["description"] or "alias" in (
         parameters["product_type"]["description"]
     )
@@ -377,11 +404,7 @@ def _by_name(specification, operation_id) -> dict:
 
 
 def _parametros(specification, operation_id) -> set[str]:
-    """The business parameters: the ones that travel in the query.
-
-    `X-Api-Key` is published too, and must be — it is part of the contract — but
-    it is a header and not a criterion: it is counted apart.
-    """
+    """The business and control parameters that travel in the query."""
     return {
         name
         for name, parameter in _by_name(specification, operation_id).items()
@@ -443,16 +466,18 @@ def test_the_navigation_publishes_its_8_parameters(client_):
     }
 
 
-def test_the_five_operations_declare_the_credential_header(client_):
+def test_the_five_operations_use_security_not_a_credential_parameter(client_):
     specification = client_.get("/openapi.json").json()
-    for operation in (
-        "get_categories",
-        "get_products_by_category",
-        "find_products_by_criteria",
-        "get_related_products",
-        "get_product_details",
-    ):
-        assert "x-api-key" in {c.lower() for c in _cabeceras(specification, operation)}
+    for path_ in specification["paths"].values():
+        for method_ in path_.values():
+            assert _cabeceras(specification, method_["operationId"]) == set()
+            assert method_["security"] == [{"CatalogApiKey": []}]
+
+
+def test_relation_is_the_only_required_related_parameter(client_):
+    parameters = _by_name(client_.get("/openapi.json").json(), "get_related_products")
+    required = {name for name, parameter in parameters.items() if parameter.get("required")}
+    assert required == {"relation"}
 
 
 def test_product_type_is_not_an_enum(client_):
@@ -470,7 +495,7 @@ def test_product_type_is_not_an_enum(client_):
 def test_closed_vocabularies_do_travel_with_their_definitions(client_):
     parameters = _by_name(client_.get("/openapi.json").json(), "find_products_by_criteria")
     assert "cooking" in parameters["use_case"]["description"]
-    assert parameters["recipient"]["description"]
+    assert "gender_specific" in parameters["recipient"]["description"]
 
 
 def test_each_operation_declares_its_response_shape(client_):
@@ -478,7 +503,16 @@ def test_each_operation_declares_its_response_shape(client_):
     for path_ in specification["paths"].values():
         for method_ in path_.values():
             schema = method_["responses"]["200"]["content"]["application/json"]["schema"]
-            assert schema.get("$ref") or schema.get("type")
+            expected = "".join(
+                part.capitalize() for part in method_["operationId"].split("_")
+            ) + "Response"
+            if method_["operationId"] == "get_categories":
+                assert schema == {"$ref": f"#/components/schemas/{expected}"}
+            else:
+                assert schema["oneOf"] == [
+                    {"$ref": f"#/components/schemas/{expected}"},
+                    {"$ref": "#/components/schemas/RecoverableError"},
+                ]
 
 
 def test_the_navigation_order_responds_to_sort(client_):
@@ -514,7 +548,6 @@ def test_the_related_one_carries_relation_type_in_the_product_itself(client_):
 
 
 def test_each_operation_is_named_the_same_in_the_three_places(client_):
-    """The route, the `operation_id` and the response schema, with the same name."""
     specification = client_.get("/openapi.json").json()
     for path_, metodos in specification["paths"].items():
         for method_ in metodos.values():
@@ -522,6 +555,8 @@ def test_each_operation_is_named_the_same_in_the_three_places(client_):
             assert path_ == f"/{operation}", (path_, operation)
             schema = method_["responses"]["200"]["content"]["application/json"]["schema"]
             reference = schema.get("$ref", "")
+            if not reference:
+                reference = schema["oneOf"][0]["$ref"]
             expected = "".join(parte.capitalize() for parte in operation.split("_")) + "Response"
             assert reference.endswith(expected), (reference, expected)
 
@@ -534,8 +569,8 @@ def test_no_published_schema_carries_an_invented_name(client_):
         "CategorySummary",
         "NotApplied",
         "RelatedProduct",
+        "RecoverableError",
         "TechnicalFailure",
-        # The closed vocabularies of B7.10, published as real enums
         "UseCase",
         "FunctionalFamily",
         "GiftRisk",
@@ -566,6 +601,22 @@ def test_the_closed_vocabularies_are_published_as_enums(client_):
     assert len(schemas["FunctionalFamily"]["enum"]) == 31
     assert schemas["GiftRisk"]["enum"] == ["high_commitment", "low", "taste_dependent"]
     assert len(schemas["SuitableRelationship"]["enum"]) == 5
+    assert schemas["RecoverableError"]["properties"]["error_type"]["enum"] == [
+        "invalid_parameter",
+        "conflicting_parameters",
+        "missing_anchor",
+        "product_not_found",
+    ]
+    assert schemas["TechnicalFailure"]["properties"]["error_code"]["enum"] == [
+        "service_unavailable",
+        "unauthorized",
+        "forbidden",
+        "rate_limited",
+    ]
+    assert schemas["RelatedProduct"]["properties"]["relation_type"]["anyOf"][0]["enum"] == [
+        "equivalent",
+        "same_function",
+    ]
 
 
 def test_the_enum_parameters_reference_those_schemas(client_):
@@ -600,13 +651,21 @@ def test_the_shared_criteria_are_described_the_same_in_both_operations(client_):
 def test_a_value_outside_an_enum_is_a_recoverable_error(client_):
     response = with_catalog(client_, "/find_products_by_criteria", use_case="not_a_situation")
     assert response.status_code == 200
-    assert response.json()["error_type"] == "invalid_parameter"
+    assert response.json() == {
+        "error_type": "invalid_parameter",
+        "parameter": "use_case",
+        "received": "not_a_situation",
+    }
 
 
 def test_a_malformed_number_is_a_recoverable_error(client_):
     response = with_catalog(client_, "/find_products_by_criteria", max_price="cheap")
     assert response.status_code == 200
-    assert response.json()["error_type"] == "invalid_parameter"
+    assert response.json() == {
+        "error_type": "invalid_parameter",
+        "parameter": "max_price",
+        "received": "cheap",
+    }
 
 
 def test_no_operation_declares_a_422(client_):
@@ -621,6 +680,24 @@ def test_every_operation_declares_401_403_429_and_5xx(client_):
     for path_ in specification["paths"].values():
         for method_ in path_.values():
             assert {"401", "403", "429", "503"} <= set(method_["responses"])
+            for code in ("401", "403", "429", "503"):
+                schema = method_["responses"][code]["content"]["application/json"]["schema"]
+                assert schema == {"$ref": "#/components/schemas/TechnicalFailure"}
+
+
+def test_an_internal_failure_is_not_disguised_as_empty_catalog(client_, monkeypatch):
+    import api
+
+    def fail():
+        raise RuntimeError("must-not-travel")
+
+    monkeypatch.setattr(api.catalog, "all_products", fail)
+    response = with_catalog(client_, "/get_categories")
+    assert response.status_code == 503
+    assert response.json()["error_code"] == "service_unavailable"
+    assert response.json()["retryable"] is False
+    assert response.json()["incident_id"]
+    assert "must-not-travel" not in response.text
 
 
 # --------------------------------------------------------------------------
@@ -640,8 +717,14 @@ def test_the_response_fields_of_b7_8_carry_their_description(client_):
     assert schemas["GetProductsByCategoryResponse"]["properties"]["offset"]["description"]
     assert schemas["ExcludedProduct"]["properties"]["exclusion_reason"]["description"]
     assert schemas["RelatedProduct"]["properties"]["relation_type"]["description"]
-    for field in ("gift_risk", "is_standalone_gift", "in_stock", "stocking_filler",
-                  "pairs_with", "alternative_to"):
+    for field in (
+        "gift_risk",
+        "is_standalone_gift",
+        "in_stock",
+        "stocking_filler",
+        "pairs_with",
+        "alternative_to",
+    ):
         assert schemas["Product"]["properties"][field]["description"], field
 
 
