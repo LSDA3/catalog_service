@@ -926,6 +926,7 @@ def openapi_specification() -> dict:
     specification = get_openapi(
         title=app.title, version=app.version, description=app.description, routes=app.routes
     )
+    specification["servers"] = [{"url": "https://indigo-catalog-service.fly.dev"}]
     components = specification.setdefault("components", {})
     components.setdefault("schemas", {})["RecoverableError"] = RecoverableError.model_json_schema(
         ref_template="#/components/schemas/{model}"
