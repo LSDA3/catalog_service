@@ -19,9 +19,10 @@ Making the other end aware of either is the loader's job.
 
 **Nothing invalid is quietly turned into something valid here.** A reference to a
 product that does not exist, a product related to itself, a `relation_type`
-outside the vocabulary or the same pair arriving twice with different natures
-stop the build. Repairing them here would hide from `validate_semantic.py`
-exactly what it exists to catch.
+outside the vocabulary, an `alternative_to` already derived by shared
+`product_type`, or the same pair arriving twice with different natures stop the
+build. Repairing them here would hide from `validate_semantic.py` exactly what it
+exists to catch.
 
 This script **does not travel to the container**.
 """
@@ -72,7 +73,11 @@ def request_relations(catalog: list[dict], prompt: str) -> dict:
     return json.loads(text_[start_ : end_ + 1])
 
 
-def normalize_relations(proposals: dict, canonical: set[str]) -> dict[str, dict]:
+def normalize_relations(
+    proposals: dict,
+    canonical: set[str],
+    product_types_by_id: dict[str, str | None] | None = None,
+) -> dict[str, dict]:
     """Leave a single write per pair, under the rule each field actually has.
 
     **The only transformations done here are mechanical**, and each one is
@@ -87,10 +92,10 @@ def normalize_relations(proposals: dict, canonical: set[str]) -> dict[str, dict]
 
     **Everything else is an error and stops the build.** This function does not
     repair the model: it does not drop a reference to a product that does not
-    exist, does not silently swallow a product related to itself, and does not
-    turn an invalid `relation_type` into `same_function`. Every one of those is
-    something `validate_semantic.py` exists to catch, and repairing it here
-    would guarantee the gate never sees it.
+    exist, does not silently swallow a product related to itself, does not turn
+    an invalid `relation_type` into `same_function`, and does not persist an
+    `alternative_to` between products whose shared `product_type` already gives
+    the service that relation at run time.
     """
     problems: list[str] = []
     # The unordered pair → which product holds the `pairs_with` write, so a
@@ -153,6 +158,17 @@ def normalize_relations(proposals: dict, canonical: set[str]) -> dict[str, dict]
                     f"It is one of {sorted(RELATION_TYPE)}, and it is not guessed here"
                 )
                 continue
+            if (
+                product_types_by_id is not None
+                and product_types_by_id.get(product_id) is not None
+                and product_types_by_id.get(product_id) == product_types_by_id.get(other)
+            ):
+                problems.append(
+                    f"{product_id} · {other}: alternative_to is already derived from "
+                    f"shared product_type {product_types_by_id[product_id]!r} and must "
+                    "not be persisted"
+                )
+                continue
             pair = tuple(sorted((product_id, other)))
             previous = alternatives.get(pair)
             if previous is None:
@@ -207,7 +223,11 @@ def main() -> int:
     proposals = request_relations(catalog, prompt)
 
     try:
-        relations = normalize_relations(proposals, {p.product_id for p in canonical})
+        relations = normalize_relations(
+            proposals,
+            {p.product_id for p in canonical},
+            product_types_by_id,
+        )
     except InvalidRelations as refused:
         # Nothing is written. A half-repaired mesh is worse than none, because
         # it passes the gate and relates badly.
