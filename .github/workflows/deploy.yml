@@ -142,15 +142,10 @@ jobs:
           commit_message: "Recompute the semantic layer"
           file_pattern: data/semantic_layer.json data/vocabularies.yaml
 
-      # Deployment is disabled while the pre-deployment audit is in progress.
-      # CI, semantic construction, validation and tests continue to run normally.
-
       - name: Set up flyctl
-        if: ${{ false }}
         uses: superfly/flyctl-actions/setup-flyctl@master
 
       - name: Deploy to Fly
-        if: ${{ false }}
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: flyctl deploy --remote-only --ha=false
