@@ -1,12 +1,21 @@
 """Las cinco operaciones, la frontera de acceso y la especificación OpenAPI.
 
-Las descripciones de B7 se escriben **literales**, en inglés, porque son
-exactamente lo que el modelo lee al decidir qué capacidad usar. Cambiarlas aquí
-cambia el comportamiento del agente sin tocar el agente.
+**Cada operación se llama igual en todas partes**: la path_, el `operation_id` y
+el esquema de su response llevan el mismo name_, el que fija la memoria. Un
+name_ distinto en cualquiera de los tres sitios es un name_ que el agente ve y
+que no está en ninguna decisión.
 
-Nada de lo que hay en este módulo decide qué productos salen ni en qué orden:
-eso vive entero en `selection.py`. Aquí se traduce la petición, se comprueba el
-acceso y se le da forma a la respuesta.
+**Todo parámetro se declara.** La especificación es lo único que indigo.ai lee
+para construir sus llamadas: un criterio que no esté declarado aquí no existe
+para el agente, por mucho que el servicio sepa aplicarlo. Por eso no se leen
+parámetros a mano de la petición, y por eso cada operación declara su forma de
+response.
+
+Las descripciones de B7 se escriben **literales**, en inglés, porque son
+exactamente lo que el modelo lee al decidir qué capability usar.
+
+Nada de lo que hay en este módulo decide qué products salen ni en qué orden:
+eso vive entero en `selection.py`.
 """
 
 from __future__ import annotations
@@ -16,22 +25,28 @@ import time
 import uuid
 from collections import deque
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
 
 import normalization
 import selection
 from models import (
-    LIMITES_POR_OPERACION,
+    LIMITS_BY_OPERATION,
     CategorySummary,
     ExcludedProduct,
     NotApplied,
     Product,
+    RelatedProduct,
+    FindProductsByCriteriaResponse,
+    GetCategoriesResponse,
+    GetProductDetailsResponse,
+    GetProductsByCategoryResponse,
+    GetRelatedProductsResponse,
 )
-from repository import CatalogoEnMemoria
+from repository import InMemoryCatalog
 
 RAIZ = Path(__file__).resolve().parents[1]
 CSV = RAIZ / "data" / "catalog.csv"
@@ -42,94 +57,81 @@ CAPA = RAIZ / "data" / "semantic_layer.json"
 # Arranque · el catálogo se carga una vez, no en cada petición
 # --------------------------------------------------------------------------
 
-catalogo = CatalogoEnMemoria(CSV, VOCABULARIOS, CAPA)
-EXCLUSIVOS_DE_GENERO = normalization.tipos_exclusivos_de_genero(VOCABULARIOS)
-VOCABULARIO = yaml.safe_load(VOCABULARIOS.read_text(encoding="utf-8"))
-CALIDAD_POR_PRODUCTO = {
-    p.product_id: catalogo.fuera_del_contrato(p.product_id)["description_quality"]
-    for p in catalogo.todos()
+catalog = InMemoryCatalog(CSV, VOCABULARIOS, CAPA)
+GENDER_SPECIFIC_TYPES = normalization.gender_specific_product_types(VOCABULARIOS)
+VOCABULARY = yaml.safe_load(VOCABULARIOS.read_text(encoding="utf-8"))
+QUALITY_BY_PRODUCT = {
+    p.product_id: catalog.off_contract(p.product_id)["description_quality"]
+    for p in catalog.all_products()
 }
+CATEGORIES = catalog.categories()
+SUBCATEGORIES = sorted({p.subcategory for p in catalog.all_products() if p.subcategory})
+BRANDS = sorted({p.brand for p in catalog.all_products() if p.brand})
 
 # --------------------------------------------------------------------------
 # B6 · la frontera de acceso
 # --------------------------------------------------------------------------
 
-CABECERA = "X-Api-Key"
-LIMITE_POR_CREDENCIAL = {"catalog": 60, "diagnostics": 10}
-VENTANA_EN_SEGUNDOS = 60
+HEADER_NAME = "X-Api-Key"
+LIMIT_BY_CREDENTIAL = {"catalog": 60, "diagnostics": 10}
+WINDOW_IN_SECONDS = 60
 
-_peticiones_recientes: dict[str, deque[float]] = {
-    "catalog": deque(),
-    "diagnostics": deque(),
-}
+_recent_requests: dict[str, deque[float]] = {"catalog": deque(), "diagnostics": deque()}
 
 
-def _capacidad(clave: str | None) -> str | None:
-    """Qué puede hacer esta credencial. Dos credenciales, dos capacidades."""
-    if not clave:
+def _capability(key_: str | None) -> str | None:
+    if not key_:
         return None
-    if clave == os.environ.get("CATALOG_API_KEY"):
+    if key_ == os.environ.get("CATALOG_API_KEY"):
         return "catalog"
-    if clave == os.environ.get("DIAGNOSTICS_API_KEY"):
+    if key_ == os.environ.get("DIAGNOSTICS_API_KEY"):
         return "diagnostics"
     return None
 
 
-def _dentro_del_limite(capacidad: str) -> bool:
+def _within_rate_limit(capability: str) -> bool:
     """Ventana deslizante de 60 segundos, en memoria del proceso.
 
     Solo se olvida lo que ya tiene más de un minuto, así que en ningún intervalo
-    de 60 segundos caben más peticiones que el límite. Un contador que se
-    reiniciara al empezar cada minuto de reloj permitiría el doble a caballo del
-    cambio de minuto.
-
-    Vuelve a cero en cada despliegue, y contaría por contenedor si hubiera más de
-    uno. El límite protege de una credencial filtrada mientras alguien la rota, y
-    para eso no necesita ser exacto: necesita existir.
+    de 60 segundos caben más peticiones que el límite. Vuelve a cero en cada
+    despliegue, y contaría por contenedor si hubiera más de uno.
     """
-    ahora = time.monotonic()
-    recientes = _peticiones_recientes[capacidad]
-    while recientes and ahora - recientes[0] > VENTANA_EN_SEGUNDOS:
-        recientes.popleft()
-    if len(recientes) >= LIMITE_POR_CREDENCIAL[capacidad]:
+    now_ = time.monotonic()
+    recent = _recent_requests[capability]
+    while recent and now_ - recent[0] > WINDOW_IN_SECONDS:
+        recent.popleft()
+    if len(recent) >= LIMIT_BY_CREDENTIAL[capability]:
         return False
-    recientes.append(ahora)
+    recent.append(now_)
     return True
 
 
-def _rechazar(codigo: int, error_code: str, detalle: str) -> HTTPException:
+def _reject(code_: int, error_code: str, detail_: str) -> HTTPException:
     return HTTPException(
-        status_code=codigo,
-        detail={
-            "error_code": error_code,
-            "detail": detalle,
-            "incident_id": uuid.uuid4().hex,
-        },
+        status_code=code_,
+        detail={"error_code": error_code, "detail": detail_, "incident_id": uuid.uuid4().hex},
     )
 
 
-async def credencial_de_catalogo(x_api_key: str | None = Header(default=None)) -> str:
+def _check(key_: str | None, expected: str) -> str:
+    capability = _capability(key_)
+    if capability is None:
+        raise _reject(401, "unauthorized", "missing or unknown credential")
+    if capability != expected:
+        raise _reject(403, "forbidden", "this credential cannot use this operation")
+    if not _within_rate_limit(capability):
+        raise _reject(429, "rate_limited", "too many requests for this credential")
+    return capability
+
+
+async def catalog_credential(x_api_key: str | None = Header(default=None)) -> str:
     """Las cinco operaciones del catálogo. Es la que usa indigo.ai."""
-    capacidad = _capacidad(x_api_key)
-    if capacidad is None:
-        raise _rechazar(401, "unauthorized", "missing or unknown credential")
-    if capacidad != "catalog":
-        raise _rechazar(403, "forbidden", "this credential cannot use catalog operations")
-    if not _dentro_del_limite(capacidad):
-        raise _rechazar(429, "rate_limited", "too many requests for this credential")
-    return capacidad
+    return _check(x_api_key, "catalog")
 
 
-async def credencial_de_diagnostico(x_api_key: str | None = Header(default=None)) -> str:
+async def diagnostics_credential(x_api_key: str | None = Header(default=None)) -> str:
     """Solo la operadora del servicio."""
-    capacidad = _capacidad(x_api_key)
-    if capacidad is None:
-        raise _rechazar(401, "unauthorized", "missing or unknown credential")
-    if capacidad != "diagnostics":
-        raise _rechazar(403, "forbidden", "this credential cannot use diagnostics")
-    if not _dentro_del_limite(capacidad):
-        raise _rechazar(429, "rate_limited", "too many requests for this credential")
-    return capacidad
+    return _check(x_api_key, "diagnostics")
 
 
 # --------------------------------------------------------------------------
@@ -137,65 +139,67 @@ async def credencial_de_diagnostico(x_api_key: str | None = Header(default=None)
 # --------------------------------------------------------------------------
 
 
-def recuperable(error_type: str, **extra: Any) -> JSONResponse:
-    """Una petición prevista que no se puede ejecutar. Es contenido, no transporte."""
-    cuerpo = {"error_type": error_type}
-    cuerpo.update({clave: valor for clave, valor in extra.items() if valor is not None})
-    return JSONResponse(status_code=200, content=cuerpo)
+def recoverable(error_type: str, **extra: Any) -> JSONResponse:
+    """Una petición prevista que no se puede ejecutar. Es contenido, no transporte.
+
+    Se devuelve como `Response`, así que no pasa por el `response_model`: la
+    especificación describe la forma del éxito, y `error_type` está descrito en
+    la descripción de cada operación.
+    """
+    body = {"error_type": error_type}
+    body.update({key_: value_ for key_, value_ in extra.items() if value_ is not None})
+    return JSONResponse(status_code=200, content=body)
 
 
 # --------------------------------------------------------------------------
-# Traducción de la petición a criterios
+# Vocabularios para la especificación
 # --------------------------------------------------------------------------
 
-CRITERIOS_DE_NEGOCIO = (
-    "product_type",
-    "category",
-    "subcategory",
-    "brand",
-    "color",
-    "material",
-    "functional_family",
-    "use_case",
-    "occasion",
-    "recipient",
-    "relationship",
-    "gender_specific",
-    "max_price",
-    "min_price",
-    "target_price",
-    "max_shipping_days",
-    "gift_wrap_required",
-    "buyer_knows_recipient",
-    "stocking_filler",
+
+def _values_of(field: str) -> list[str]:
+    return sorted(VOCABULARY[field])
+
+
+def _definitions_of(field: str) -> str:
+    lines = []
+    for key_, definition in VOCABULARY[field].items():
+        text_ = definition.get("definicion", "") if isinstance(definition, dict) else ""
+        lines.append(f"`{key_}`: {text_}".strip())
+    return "\n".join(lines)
+
+
+USE_CASE = _values_of("use_case")
+FUNCTIONAL_FAMILY = _values_of("functional_family")
+SUITABLE_RELATIONSHIPS = _values_of("suitable_relationships")
+OCCASIONS = sorted({value_ for p in catalog.all_products() for value_ in p.occasion})
+
+# `product_type` NO tiene `enum`: es el único vocabulary que crece con el
+# inventario, y en el contrato viaja como text_ libre resuelto por aliases_.
+PRODUCT_TYPE_DESCRIPTION = (
+    "The concrete object the customer asked for, as free text. Resolved against a "
+    "controlled but growing vocabulary of product types and their aliases: `gyuto` "
+    "resolves to `chef_knife`. When it resolves, only products of exactly that type "
+    "are returned. When it does not resolve, it is reported in `not_applied` and "
+    "must not be claimed as satisfied. Never send it to narrow a vague intention."
 )
 
 
-def _query_understood(criterios: dict) -> dict:
-    """Solo los criterios entendidos y aplicados, ya normalizados.
-
-    No reproduce el `Map` de la conversación ni devuelve campos nulos que no
-    participaron: hace visible qué ejecutó de verdad el servicio.
-    """
-    return {clave: valor for clave, valor in criterios.items() if valor is not None}
-
-
-def _resolver_product_type(pedido: str | None) -> tuple[str | None, NotApplied | None]:
-    """Resuelve el objeto pedido por su nombre o por un alias del vocabulario."""
-    if not pedido:
+def _resolve_product_type(requested: str | None) -> tuple[str | None, NotApplied | None]:
+    """Resuelve el objeto requested por su name_ o por uno de sus aliases_."""
+    if not requested:
         return None, None
-    tipos = VOCABULARIO["product_type"]
-    if pedido in tipos:
-        return pedido, None
-    for canonico, definicion in tipos.items():
-        alias = definicion.get("aliases", []) if isinstance(definicion, dict) else []
-        if pedido.lower() in [a.lower() for a in alias]:
-            return canonico, None
-    return None, NotApplied(parameter="product_type", received=pedido, reason="unresolved")
+    types_ = VOCABULARY["product_type"]
+    if requested in types_:
+        return requested, None
+    for canonical, definition in types_.items():
+        aliases_ = definition.get("aliases", []) if isinstance(definition, dict) else []
+        if requested.lower() in [a.lower() for a in aliases_]:
+            return canonical, None
+    return None, NotApplied(parameter="product_type", received=requested, reason="unresolved")
 
 
-def _producto_como_dict(producto: Product) -> dict:
-    return producto.__dict__
+def _without_nulls(criteria: dict) -> dict:
+    return {key_: value_ for key_, value_ in criteria.items() if value_ is not None}
 
 
 # --------------------------------------------------------------------------
@@ -215,9 +219,10 @@ app = FastAPI(
 
 
 @app.get(
-    "/categories",
+    "/get_categories",
     operation_id="get_categories",
-    dependencies=[Depends(credencial_de_catalogo)],
+    response_model=GetCategoriesResponse,
+    dependencies=[Depends(catalog_credential)],
     description=(
         "Returns the current normalized product categories in the catalog, including "
         "the number of available products and the current available price range for "
@@ -226,28 +231,27 @@ app = FastAPI(
         "category summaries, not product recommendations."
     ),
 )
-async def get_categories() -> dict:
-    resumenes = []
-    for nombre in catalogo.categorias():
-        disponibles = [
-            p for p in catalogo.todos() if p.category == nombre and p.in_stock
-        ]
-        precios = [p.price for p in disponibles if p.price is not None]
-        resumenes.append(
+async def get_categories() -> GetCategoriesResponse:
+    summaries = []
+    for name_ in CATEGORIES:
+        available = [p for p in catalog.all_products() if p.category == name_ and p.in_stock]
+        prices = [p.price for p in available if p.price is not None]
+        summaries.append(
             CategorySummary(
-                name=nombre,
-                available_count=len(disponibles),
-                price_min=min(precios) if precios else None,
-                price_max=max(precios) if precios else None,
-            ).__dict__
+                name=name_,
+                available_count=len(available),
+                price_min=min(prices) if prices else None,
+                price_max=max(prices) if prices else None,
+            )
         )
-    return {"currency": "EUR", "results": resumenes}
+    return GetCategoriesResponse(results=summaries)
 
 
 @app.get(
-    "/products/by-category",
+    "/get_products_by_category",
     operation_id="get_products_by_category",
-    dependencies=[Depends(credencial_de_catalogo)],
+    response_model=GetProductsByCategoryResponse,
+    dependencies=[Depends(catalog_credential)],
     description=(
         "Browses products from one explicitly requested catalog category. Returns up "
         "to 8 products per page and supports continued navigation with `offset`. Use "
@@ -255,51 +259,74 @@ async def get_categories() -> dict:
         "have named. Always carry over any budget and delivery limits the customer has "
         "already stated. Do not use for a broader gift-discovery request in which "
         "category is only one of several preferences; use `find_products_by_criteria` "
-        "instead."
+        "instead. When browsing, `sort` is the customer's own choice of order and does "
+        "not affect how recommendations are ranked anywhere else."
     ),
 )
 async def get_products_by_category(
-    category: str,
-    limit: int = Query(default=8),
-    offset: int = Query(default=0),
-    max_price: float | None = None,
-    min_price: float | None = None,
-    max_shipping_days: int | None = None,
+    category: str = Query(description="The catalog category to browse."),
+    max_price: float | None = Query(default=None, description="Upper price boundary, in EUR."),
+    target_price: float | None = Query(
+        default=None, description="Approximate price. Opens a band of ±20 % around it."
+    ),
+    min_price: float | None = Query(default=None, description="Lower price boundary, in EUR."),
+    max_shipping_days: int | None = Query(
+        default=None, description="Maximum acceptable delivery time, in days."
+    ),
+    sort: Literal["rating", "price_asc", "price_desc"] = Query(
+        default="rating",
+        description=(
+            "Order of the page the customer is browsing. `rating` is the default; "
+            "`price_asc` and `price_desc` answer questions such as what is the cheapest "
+            "item in a category."
+        ),
+    ),
+    limit: int = Query(default=8, description="Products per page, 1 to 8."),
+    offset: int = Query(default=0, description="Where the page starts within `total`."),
 ) -> Any:
-    minimo, maximo, _ = LIMITES_POR_OPERACION["get_products_by_category"]
-    if not (minimo <= limit <= maximo) or offset < 0:
-        return recuperable("invalid_parameter", parameter="limit" if limit else "offset")
-    if category not in catalogo.categorias():
-        return recuperable("invalid_parameter", parameter="category")
+    minimum, maximum, _ = LIMITS_BY_OPERATION["get_products_by_category"]
+    if not (minimum <= limit <= maximum):
+        return recoverable("invalid_parameter", parameter="limit")
+    if offset < 0:
+        return recoverable("invalid_parameter", parameter="offset")
+    if category not in CATEGORIES:
+        return recoverable("invalid_parameter", parameter="category")
 
-    criterios = _query_understood(
+    criteria = _without_nulls(
         {
             "max_price": max_price,
+            "target_price": target_price,
             "min_price": min_price,
             "max_shipping_days": max_shipping_days,
         }
     )
-    de_la_categoria = [p for p in catalogo.todos() if p.category == category]
+    of_the_category = [p for p in catalog.all_products() if p.category == category]
     # Navegar el estante no es ofrecer un regalo: aquí no se exige
     # `is_standalone_gift`. `in_stock` sí corta, como en todo el servicio (B2.7).
-    dentro = selection.coger_lo_que_cumple(
-        de_la_categoria, criterios, EXCLUSIVOS_DE_GENERO, exigir_regalo_autonomo=False
+    inside = selection.take_what_qualifies(
+        of_the_category, criteria, GENDER_SPECIFIC_TYPES, require_standalone_gift=False
     )
-    ordenados = selection.ordenar_por_precedencia(dentro, criterios, CALIDAD_POR_PRODUCTO)
 
-    pagina = ordenados[offset : offset + limit]
-    return {
-        "currency": "EUR",
-        "total": len(ordenados),
-        "offset": offset,
-        "results": [_producto_como_dict(p) for p in pagina],
-    }
+    if sort == "price_asc":
+        ordered = sorted(inside, key=lambda p: (p.price is None, p.price, p.product_id))
+    elif sort == "price_desc":
+        ordered = sorted(
+            inside, key=lambda p: (p.price is None, -(p.price or 0), p.product_id)
+        )
+    else:
+        ordered = selection.order_by_precedence(inside, criteria, QUALITY_BY_PRODUCT)
+
+    return GetProductsByCategoryResponse(
+        results=ordered[offset : offset + limit], total=len(ordered), offset=offset
+    )
 
 
 @app.get(
-    "/products/search",
+    "/find_products_by_criteria",
     operation_id="find_products_by_criteria",
-    dependencies=[Depends(credencial_de_catalogo)],
+    response_model=FindProductsByCriteriaResponse,
+    response_model_exclude_none=True,
+    dependencies=[Depends(catalog_credential)],
     description=(
         "Primary cross-category product-discovery operation. Searches the whole "
         "catalog using any combination of customer constraints and preference signals, "
@@ -313,70 +340,139 @@ async def get_products_by_category(
         "not be claimed as satisfied."
     ),
 )
-async def find_products_by_criteria(request: Request, limit: int = Query(default=8)) -> Any:
-    minimo, maximo, _ = LIMITES_POR_OPERACION["find_products_by_criteria"]
-    if not (minimo <= limit <= maximo):
-        return recuperable("invalid_parameter", parameter="limit")
+async def find_products_by_criteria(
+    max_price: float | None = Query(default=None, description="Upper price boundary, in EUR."),
+    target_price: float | None = Query(
+        default=None, description="Approximate price. Opens a band of ±20 % around it."
+    ),
+    min_price: float | None = Query(default=None, description="Lower price boundary, in EUR."),
+    recipient: Literal["her", "him", "couple", "kids"] | None = Query(
+        default=None,
+        description=(
+            "Who receives the gift. Only `kids` narrows the results: adult products "
+            "match any adult recipient, because the catalog marks gender by commercial "
+            "habit and not by a property of the object."
+        ),
+    ),
+    relationship: str | None = Query(
+        default=None,
+        description=(
+            "Relationship between buyer and recipient. It never removes a product: it "
+            "only decides which of the surviving products comes first. Allowed values: "
+            + ", ".join(SUITABLE_RELATIONSHIPS)
+        ),
+    ),
+    occasion: str | None = Query(
+        default=None, description="Event the gift is for. Allowed values: " + ", ".join(OCCASIONS)
+    ),
+    use_case: list[str] | None = Query(
+        default=None,
+        description=(
+            "Situations in which the product is used. Accepts several values, which are "
+            "alternatives and not accumulated points.\n" + _definitions_of("use_case")
+        ),
+    ),
+    functional_family: list[str] | None = Query(
+        default=None,
+        description=(
+            "The work the object does. Accepts several values, which are alternatives "
+            "and not accumulated points.\n" + _definitions_of("functional_family")
+        ),
+    ),
+    buyer_knows_recipient: bool | None = Query(
+        default=None,
+        description=(
+            "Whether the buyer knows the recipient well. Absent and `false` behave the "
+            "same and keep the precaution; `true` removes it. Absent is not `false`."
+        ),
+    ),
+    product_type: str | None = Query(default=None, description=PRODUCT_TYPE_DESCRIPTION),
+    category: str | None = Query(
+        default=None, description="Catalog category. Allowed values: " + ", ".join(CATEGORIES)
+    ),
+    subcategory: str | None = Query(default=None, description="Catalog subcategory."),
+    brand: str | None = Query(default=None, description="Exact brand. It does not admit degree."),
+    color: str | None = Query(default=None, description="Exact colour. Blue is not almost blue."),
+    material: str | None = Query(default=None, description="Exact material."),
+    max_shipping_days: int | None = Query(
+        default=None, description="Maximum acceptable delivery time, in days."
+    ),
+    gift_wrap_required: bool | None = Query(
+        default=None,
+        description=(
+            "Send `true` only when the customer asked for gift wrapping. Absent is not "
+            "`false`: absence is a state of its own and is never claimed as a preference."
+        ),
+    ),
+    stocking_filler: bool | None = Query(
+        default=None,
+        description=(
+            "Send `true` to look for a small addition that closes a remaining budget. "
+            "Absent is not `false`."
+        ),
+    ),
+    limit: int = Query(default=8, description="Products to return, 1 to 8."),
+) -> Any:
+    minimum, maximum, _ = LIMITS_BY_OPERATION["find_products_by_criteria"]
+    if not (minimum <= limit <= maximum):
+        return recoverable("invalid_parameter", parameter="limit")
+    if max_price is not None and min_price is not None and min_price > max_price:
+        return recoverable("conflicting_parameters", parameter="min_price")
 
-    recibidos = dict(request.query_params)
-    criterios: dict[str, Any] = {}
-    no_aplicados: list[NotApplied] = []
+    criteria = _without_nulls(
+        {
+            "max_price": max_price,
+            "target_price": target_price,
+            "min_price": min_price,
+            "recipient": recipient,
+            "relationship": relationship,
+            "occasion": occasion,
+            "use_case": use_case,
+            "functional_family": functional_family,
+            "buyer_knows_recipient": buyer_knows_recipient,
+            "category": category,
+            "subcategory": subcategory,
+            "brand": brand,
+            "color": color,
+            "material": material,
+            "max_shipping_days": max_shipping_days,
+            "gift_wrap_required": gift_wrap_required,
+            "stocking_filler": stocking_filler,
+        }
+    )
 
-    for clave in CRITERIOS_DE_NEGOCIO:
-        if clave not in recibidos:
-            continue
-        valor: Any = recibidos[clave]
-        if clave in ("max_price", "min_price", "target_price"):
-            valor = float(valor)
-        elif clave == "max_shipping_days":
-            valor = int(valor)
-        elif clave in ("gift_wrap_required", "buyer_knows_recipient", "stocking_filler"):
-            valor = valor.lower() == "true"
-        elif clave in ("functional_family", "use_case"):
-            valor = [parte for parte in valor.split(",") if parte]
-        criterios[clave] = valor
+    kind_, unresolved = _resolve_product_type(product_type)
+    not_applied_ = [unresolved] if unresolved else []
 
-    if "max_price" in criterios and "min_price" in criterios:
-        if criterios["min_price"] > criterios["max_price"]:
-            return recuperable("conflicting_parameters", parameter="min_price")
+    universe = selection.restrict_to_exact_match(catalog.all_products(), kind_)
+    inside = selection.take_what_qualifies(universe, criteria, GENDER_SPECIFIC_TYPES)
+    ordered = selection.order_by_precedence(inside, criteria, QUALITY_BY_PRODUCT)
+    results_ = ordered[:limit]
 
-    tipo, sin_resolver = _resolver_product_type(criterios.pop("product_type", None))
-    if sin_resolver is not None:
-        no_aplicados.append(sin_resolver)
-
-    conjunto = selection.restringir_por_coincidencia_exacta(catalogo.todos(), tipo)
-    dentro = selection.coger_lo_que_cumple(conjunto, criterios, EXCLUSIVOS_DE_GENERO)
-    ordenados = selection.ordenar_por_precedencia(dentro, criterios, CALIDAD_POR_PRODUCTO)
-    resultados = ordenados[:limit]
-
-    excluidos: list[ExcludedProduct] = []
-    if len(resultados) < limit:
-        excluidos = selection.por_encima_del_presupuesto(
-            conjunto, criterios, EXCLUSIVOS_DE_GENERO, CALIDAD_POR_PRODUCTO
+    excluded_: list[ExcludedProduct] = []
+    if len(results_) < limit:
+        excluded_ = selection.above_budget(
+            universe, criteria, GENDER_SPECIFIC_TYPES, QUALITY_BY_PRODUCT
         )
 
-    entendido = _query_understood(criterios)
-    if tipo:
-        entendido["product_type"] = tipo
+    understood = dict(criteria)
+    if kind_:
+        understood["product_type"] = kind_
 
-    respuesta: dict[str, Any] = {
-        "currency": "EUR",
-        "query_understood": entendido,
-        "results": [_producto_como_dict(p) for p in resultados],
-    }
-    # `excluded` y `not_applied` se omiten cuando están vacíos: que existan
-    # significa "presta atención a esto".
-    if excluidos:
-        respuesta["excluded"] = [e.__dict__ for e in excluidos]
-    if no_aplicados:
-        respuesta["not_applied"] = [n.__dict__ for n in no_aplicados]
-    return respuesta
+    return FindProductsByCriteriaResponse(
+        results=results_,
+        query_understood=understood,
+        excluded=excluded_ or None,
+        not_applied=not_applied_ or None,
+    )
 
 
 @app.get(
-    "/products/related",
+    "/get_related_products",
     operation_id="get_related_products",
-    dependencies=[Depends(credencial_de_catalogo)],
+    response_model=GetRelatedProductsResponse,
+    response_model_exclude_none=True,
+    dependencies=[Depends(catalog_credential)],
     description=(
         "Returns products related to a product the customer has in mind, or to a "
         "sufficiently described product intention. Use `pairs_with` for complementary "
@@ -399,82 +495,129 @@ async def find_products_by_criteria(request: Request, limit: int = Query(default
     ),
 )
 async def get_related_products(
-    request: Request,
-    relation: str | None = None,
-    product_id: str | None = None,
-    limit: int = Query(default=3),
+    relation: Literal["alternative_to", "pairs_with"] | None = Query(
+        default=None,
+        description=(
+            "Which relation to walk. It is the only required parameter: without it the "
+            "operation has no meaning."
+        ),
+    ),
+    product_id: str | None = Query(
+        default=None,
+        description=(
+            "The source product. It is not a privileged input, it is one more "
+            "criterion — but `pairs_with` cannot start without it."
+        ),
+    ),
+    product_type: str | None = Query(default=None, description=PRODUCT_TYPE_DESCRIPTION),
+    functional_family: list[str] | None = Query(
+        default=None, description="The work the object being substituted does."
+    ),
+    use_case: list[str] | None = Query(
+        default=None, description="Situations in which the object being substituted is used."
+    ),
+    occasion: str | None = Query(default=None, description="Event the gift is for."),
+    recipient: Literal["her", "him", "couple", "kids"] | None = Query(
+        default=None, description="Who receives the gift."
+    ),
+    relationship: str | None = Query(
+        default=None, description="Relationship between buyer and recipient."
+    ),
+    category: str | None = Query(default=None, description="Catalog category."),
+    subcategory: str | None = Query(default=None, description="Catalog subcategory."),
+    brand: str | None = Query(default=None, description="Exact brand."),
+    color: str | None = Query(default=None, description="Exact colour."),
+    material: str | None = Query(default=None, description="Exact material."),
+    max_shipping_days: int | None = Query(
+        default=None, description="Maximum acceptable delivery time, in days."
+    ),
+    gift_wrap_required: bool | None = Query(
+        default=None, description="A hard boundary that must not be lost when walking a relation."
+    ),
+    max_price: float | None = Query(default=None, description="Upper price boundary, in EUR."),
+    min_price: float | None = Query(
+        default=None, description="Lower price boundary. This is how an upsell is requested."
+    ),
+    target_price: float | None = Query(
+        default=None, description="Approximate price. Opens a band of ±20 % around it."
+    ),
+    buyer_knows_recipient: bool | None = Query(
+        default=None, description="Whether the buyer knows the recipient well."
+    ),
+    limit: int = Query(default=3, description="Products to return, 1 to 5."),
 ) -> Any:
-    if relation not in selection.RELACIONES:
-        return recuperable("invalid_parameter", parameter="relation")
+    if relation is None:
+        return recoverable("invalid_parameter", parameter="relation")
 
-    minimo, maximo, _ = LIMITES_POR_OPERACION["get_related_products"]
-    if not (minimo <= limit <= maximo):
-        return recuperable("invalid_parameter", parameter="limit")
+    minimum, maximum, _ = LIMITS_BY_OPERATION["get_related_products"]
+    if not (minimum <= limit <= maximum):
+        return recoverable("invalid_parameter", parameter="limit")
 
-    ancla = catalogo.por_id(product_id) if product_id else None
-    if product_id and ancla is None:
-        return recuperable("product_not_found", product_id=product_id)
+    anchor = catalog.by_id(product_id) if product_id else None
+    if product_id and anchor is None:
+        return recoverable("product_not_found", product_id=product_id)
 
-    recibidos = dict(request.query_params)
-    criterios: dict[str, Any] = {}
-    for clave in CRITERIOS_DE_NEGOCIO:
-        if clave == "stocking_filler" or clave not in recibidos:
-            continue
-        valor: Any = recibidos[clave]
-        if clave in ("max_price", "min_price", "target_price"):
-            valor = float(valor)
-        elif clave == "max_shipping_days":
-            valor = int(valor)
-        elif clave in ("gift_wrap_required", "buyer_knows_recipient"):
-            valor = valor.lower() == "true"
-        elif clave in ("functional_family", "use_case"):
-            valor = [parte for parte in valor.split(",") if parte]
-        criterios[clave] = valor
+    kind_, unresolved = _resolve_product_type(product_type)
 
-    if relation == "pairs_with" and ancla is None:
-        return recuperable("missing_anchor", relation=relation)
-
-    criterios_semanticos = {
-        clave: valor
-        for clave, valor in criterios.items()
-        if clave
-        not in ("max_price", "min_price", "target_price", "max_shipping_days")
-    }
-    if relation == "alternative_to" and ancla is None and not criterios_semanticos:
-        return recuperable("missing_anchor", relation=relation)
-
-    elegidos = selection.relacionados(
-        catalogo.todos(),
-        relation,
-        ancla,
-        criterios,
-        limit,
-        EXCLUSIVOS_DE_GENERO,
-        CALIDAD_POR_PRODUCTO,
+    criteria = _without_nulls(
+        {
+            "functional_family": functional_family,
+            "use_case": use_case,
+            "occasion": occasion,
+            "recipient": recipient,
+            "relationship": relationship,
+            "category": category,
+            "subcategory": subcategory,
+            "brand": brand,
+            "color": color,
+            "material": material,
+            "max_shipping_days": max_shipping_days,
+            "gift_wrap_required": gift_wrap_required,
+            "max_price": max_price,
+            "min_price": min_price,
+            "target_price": target_price,
+            "buyer_knows_recipient": buyer_knows_recipient,
+        }
     )
 
-    resultados = []
-    for producto in elegidos:
-        elemento = _producto_como_dict(producto)
-        if relation == "alternative_to":
-            # Para una relación explícita es el valor persistido; para una
-            # derivada, `same_function` de forma determinista.
-            explicita = ancla and catalogo.tipo_de_relacion(
-                ancla.product_id, producto.product_id
-            )
-            elemento = dict(elemento, relation_type=explicita or "same_function")
-        resultados.append(elemento)
+    if relation == "pairs_with" and anchor is None:
+        return recoverable("missing_anchor", relation=relation)
 
-    respuesta: dict[str, Any] = {"currency": "EUR", "results": resultados}
-    if ancla is None:
-        respuesta["query_understood"] = _query_understood(criterios)
-    return respuesta
+    boundaries = {"max_price", "min_price", "target_price", "max_shipping_days", "gift_wrap_required"}
+    has_intention = bool(kind_) or any(key_ not in boundaries for key_ in criteria)
+    if relation == "alternative_to" and anchor is None and not has_intention:
+        return recoverable("missing_anchor", relation=relation)
+
+    universe = selection.restrict_to_exact_match(
+        catalog.all_products(), kind_ if anchor is None else None
+    )
+    chosen = selection.related_products(
+        universe, relation, anchor, criteria, limit, GENDER_SPECIFIC_TYPES, QUALITY_BY_PRODUCT
+    )
+
+    results_ = []
+    for product in chosen:
+        kind = None
+        if relation == "alternative_to":
+            # Para una relación explícita es el value_ persistido; para una
+            # derivada, `same_function` de forma determinista.
+            explicit = (
+                catalog.relation_type_of(anchor.product_id, product.product_id) if anchor else None
+            )
+            kind = explicit or "same_function"
+        results_.append(RelatedProduct(**vars(product), relation_type=kind))
+
+    understood = dict(criteria) if anchor is None else None
+    if understood is not None and kind_:
+        understood["product_type"] = kind_
+    return GetRelatedProductsResponse(results=results_, query_understood=understood)
 
 
 @app.get(
-    "/products/{product_id}",
+    "/get_product_details",
     operation_id="get_product_details",
-    dependencies=[Depends(credencial_de_catalogo)],
+    response_model=GetProductDetailsResponse,
+    dependencies=[Depends(catalog_credential)],
     description=(
         "Returns the complete catalog representation of one identified product. Use "
         "when the customer explicitly refers to a known product, or when a direct "
@@ -485,11 +628,13 @@ async def get_related_products(
         "complete Product schema."
     ),
 )
-async def get_product_details(product_id: str) -> Any:
-    producto = catalogo.por_id(product_id)
-    if producto is None:
-        return recuperable("product_not_found", product_id=product_id)
-    return {"currency": "EUR", "result": _producto_como_dict(producto)}
+async def get_product_details(
+    product_id: str = Query(description="The canonical identifier of the product."),
+) -> Any:
+    product = catalog.by_id(product_id)
+    if product is None:
+        return recoverable("product_not_found", product_id=product_id)
+    return GetProductDetailsResponse(result=product)
 
 
 # --------------------------------------------------------------------------
@@ -500,64 +645,57 @@ async def get_product_details(product_id: str) -> Any:
 @app.get(
     "/_diagnostics/load-report",
     include_in_schema=False,
-    dependencies=[Depends(credencial_de_diagnostico)],
+    dependencies=[Depends(diagnostics_credential)],
 )
 async def load_report() -> dict:
     """El informe de calidad de la carga. No forma parte de la especificación."""
-    productos = catalogo.todos()
+    products = catalog.all_products()
     return {
-        "products": len(productos),
-        "available": sum(1 for p in productos if p.in_stock),
-        "without_price": sum(1 for p in productos if p.price is None),
-        "without_rating": sum(1 for p in productos if p.rating is None),
-        "without_occasion": sum(1 for p in productos if not p.occasion),
-        "poor_description": sum(
-            1 for valor in CALIDAD_POR_PRODUCTO.values() if valor == "poor"
-        ),
+        "products": len(products),
+        "available": sum(1 for p in products if p.in_stock),
+        "without_price": sum(1 for p in products if p.price is None),
+        "without_rating": sum(1 for p in products if p.rating is None),
+        "without_occasion": sum(1 for p in products if not p.occasion),
+        "poor_description": sum(1 for v in QUALITY_BY_PRODUCT.values() if v == "poor"),
         "merged": {
-            product_id: datos["alt_product_ids"]
-            for product_id, datos in (
-                (p.product_id, catalogo.fuera_del_contrato(p.product_id)) for p in productos
-            )
-            if datos["alt_product_ids"]
+            p.product_id: catalog.off_contract(p.product_id)["alt_product_ids"]
+            for p in products
+            if catalog.off_contract(p.product_id)["alt_product_ids"]
         },
     }
 
 
 # --------------------------------------------------------------------------
-# La especificación · los `enum` llevan las definiciones del vocabulario
+# La especificación
 # --------------------------------------------------------------------------
 
-
-def _definiciones(campo: str) -> str:
-    valores = VOCABULARIO[campo]
-    lineas = []
-    for clave, definicion in valores.items():
-        texto = definicion.get("definicion", "") if isinstance(definicion, dict) else ""
-        lineas.append(f"`{clave}`: {texto}".strip())
-    return "\n".join(lineas)
+_specification: dict | None = None
 
 
-def openapi_con_vocabulario() -> dict:
-    """Añade a la especificación las `definicion` de `vocabularies.yaml`.
+def openapi_specification() -> dict:
+    """Publica la especificación con el esquema de seguridad declarado.
 
-    Un `enum` de treinta valores sin definiciones obliga al modelo a adivinar qué
-    significa cada uno. Las definiciones ya están escritas: se publican.
+    Los vocabularios cerrados viajan ya en los `enum` y en las descripciones de
+    cada parámetro, que es donde el modelo los lee. **`product_type` no lleva
+    `enum` a propósito**: es el único vocabulary que crece con el inventario, y
+    en el contrato es text_ libre resuelto por aliases_.
     """
-    especificacion = app.openapi()
-    componentes = especificacion.setdefault("components", {}).setdefault("schemas", {})
-    for campo in ("product_type", "use_case", "functional_family", "gift_risk",
-                  "suitable_relationships"):
-        componentes[campo] = {
-            "type": "string",
-            "enum": sorted(VOCABULARIO[campo]),
-            "description": _definiciones(campo),
-        }
-    especificacion.setdefault("components", {})["securitySchemes"] = {
-        "CatalogApiKey": {"type": "apiKey", "in": "header", "name": CABECERA}
+    global _specification
+    if _specification is not None:
+        return _specification
+
+    from fastapi.openapi.utils import get_openapi
+
+    specification = get_openapi(
+        title=app.title, version=app.version, description=app.description, routes=app.routes
+    )
+    components = specification.setdefault("components", {})
+    components["securitySchemes"] = {
+        "CatalogApiKey": {"type": "apiKey", "in": "header", "name": HEADER_NAME}
     }
-    especificacion["security"] = [{"CatalogApiKey": []}]
-    return especificacion
+    specification["security"] = [{"CatalogApiKey": []}]
+    _specification = specification
+    return specification
 
 
-app.openapi = openapi_con_vocabulario  # type: ignore[method-assign]
+app.openapi = openapi_specification  # type: ignore[method-assign]

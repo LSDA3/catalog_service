@@ -1,14 +1,14 @@
-"""Canonicalización determinista del catálogo.
+"""Deterministic canonicalization of the catalog.
 
-Esta es la única implementación de la transformación descrita en A2.2.
-La consumen `loader.py` en tiempo de ejecución y `enrich.py`, `relate.py` y
-`validate_semantic.py` en construcción. Nadie la reescribe: dos implementaciones
-que se separen producen dos catálogos distintos, y la puerta de cobertura de
-A3.4 dejaría de significar nada.
+This is the single implementation of the transformation described in A2.2. It is
+consumed by `loader.py` at runtime and by `enrich.py`, `relate.py` and
+`validate_semantic.py` during construction. Nobody rewrites it: two
+implementations that drift apart produce two different catalogs, and the coverage
+gate of A3.4 would stop meaning anything.
 
-No inventa datos. Lo que no está, no está: un precio ausente deja el producto
-sin precio, una nota ausente se queda ausente y nunca vale cero. Ante un valor
-genuinamente ambiguo se detiene indicando fila, columna y valor.
+It invents nothing. What is not there is not there: a missing price leaves the
+product without a price, a missing rating stays missing and never counts as zero.
+Faced with a genuinely ambiguous value it stops, naming row, column and value.
 """
 
 from __future__ import annotations
@@ -21,43 +21,33 @@ from pathlib import Path
 import yaml
 
 
-class CatalogoAmbiguo(Exception):
-    """El fichero trae un valor que no se puede leer sin suponer.
+class AmbiguousCatalog(Exception):
+    """The file carries a value that cannot be read without assuming.
 
-    Se prefiere detener el arranque a acertar el 80 % en silencio (A2.2).
+    Stopping the start-up is preferred to getting 80 % right in silence (A2.2).
     """
 
-    def __init__(self, fila: int, columna: str, valor: str, motivo: str) -> None:
-        super().__init__(
-            f"fila {fila}, columna «{columna}», valor {valor!r}: {motivo}"
-        )
-        self.fila = fila
-        self.columna = columna
-        self.valor = valor
-        self.motivo = motivo
-
-
-# --------------------------------------------------------------------------
-# Aviso de calidad
-# --------------------------------------------------------------------------
+    def __init__(self, row: int, column: str, value: str, reason: str) -> None:
+        super().__init__(f"row {row}, column {column!r}, value {value!r}: {reason}")
+        self.row = row
+        self.column = column
+        self.value = value
+        self.reason = reason
 
 
 @dataclass(frozen=True)
-class Aviso:
-    """Un hecho observado en el fichero que conviene reportar (A2.3)."""
+class QualityWarning:
+    """A fact observed in the file that is worth reporting (A2.3)."""
 
-    clase: str
+    kind: str
     product_id: str
-    detalle: str
-
-
-# --------------------------------------------------------------------------
-# El producto canónico
-# --------------------------------------------------------------------------
+    detail: str
 
 
 @dataclass
-class ProductoCanonico:
+class CanonicalProduct:
+    """One product of the catalog after the deterministic transformation."""
+
     product_id: str
     alt_product_ids: list[str] = field(default_factory=list)
     name: str = ""
@@ -82,290 +72,288 @@ class ProductoCanonico:
 
 
 # --------------------------------------------------------------------------
-# Normalización de valores
+# Value normalization
 # --------------------------------------------------------------------------
 
-_DIVISA = re.compile(r"(?i)(^\s*(eur|€)\s*|\s*(eur|€)\s*$)")
-_SOLO_DIGITOS = re.compile(r"^\d+$")
-_DECIMAL_PUNTO = re.compile(r"^\d+\.\d+$")
-_DECIMAL_COMA = re.compile(r"^\d+,\d{2}$")
-_EUROPEO = re.compile(r"^\d{1,3}(\.\d{3})+,\d{2}$")
-_MILES_AMBIGUO = re.compile(r"^\d+,\d{3}$")
+_CURRENCY = re.compile(r"(?i)(^\s*(eur|€)\s*|\s*(eur|€)\s*$)")
+_ONLY_DIGITS = re.compile(r"^\d+$")
+_DECIMAL_DOT = re.compile(r"^\d+\.\d+$")
+_DECIMAL_COMMA = re.compile(r"^\d+,\d{2}$")
+_EUROPEAN = re.compile(r"^\d{1,3}(\.\d{3})+,\d{2}$")
+_AMBIGUOUS_THOUSANDS = re.compile(r"^\d+,\d{3}$")
 
 
-def normalizar_precio(bruto: str, fila: int) -> float | None:
-    """Devuelve el precio en euros, o `None` si el fichero no lo trae.
+def normalize_price(raw: str, row: int) -> float | None:
+    """Return the price in euros, or `None` when the file does not carry one.
 
-    Retirar el símbolo de la divisa o cambiar la coma decimal por un punto es
-    normalizar un formato. Rellenar lo que no está sería inventar (A2.2).
+    Removing a currency symbol or turning a decimal comma into a dot is
+    normalizing a format. Filling in what is not there would be inventing (A2.2).
     """
-    valor = (bruto or "").strip()
-    if not valor:
+    value = (raw or "").strip()
+    if not value:
         return None
 
-    valor = _DIVISA.sub("", valor).strip()
+    value = _CURRENCY.sub("", value).strip()
 
-    if _SOLO_DIGITOS.match(valor) or _DECIMAL_PUNTO.match(valor):
-        numero = float(valor)
-    elif _DECIMAL_COMA.match(valor):
-        numero = float(valor.replace(",", "."))
-    elif _EUROPEO.match(valor):
-        numero = float(valor.replace(".", "").replace(",", "."))
-    elif _MILES_AMBIGUO.match(valor):
-        raise CatalogoAmbiguo(
-            fila, "price_eur", bruto, "no se puede saber si es separador de miles o decimal"
+    if _ONLY_DIGITS.match(value) or _DECIMAL_DOT.match(value):
+        number = float(value)
+    elif _DECIMAL_COMMA.match(value):
+        number = float(value.replace(",", "."))
+    elif _EUROPEAN.match(value):
+        number = float(value.replace(".", "").replace(",", "."))
+    elif _AMBIGUOUS_THOUSANDS.match(value):
+        raise AmbiguousCatalog(
+            row, "price_eur", raw, "cannot tell a thousands separator from a decimal one"
         )
     else:
-        raise CatalogoAmbiguo(fila, "price_eur", bruto, "formato de precio no reconocido")
+        raise AmbiguousCatalog(row, "price_eur", raw, "unrecognised price format")
 
-    if numero <= 0:
-        raise CatalogoAmbiguo(
-            fila, "price_eur", bruto, "un catálogo de regalos no tiene precios nulos ni negativos"
+    if number <= 0:
+        raise AmbiguousCatalog(
+            row, "price_eur", raw, "a gift catalog has no null or negative prices"
         )
-    return round(numero, 2)
+    return round(number, 2)
 
 
-_SI_HAY = {"yes", "y", "true", "available", "in stock", "sí", "si"}
-_NO_HAY = {"no", "n", "false", "unavailable", "out of stock", "sold out"}
+_IN_STOCK_WORDS = {"yes", "y", "true", "available", "in stock"}
+_OUT_OF_STOCK_WORDS = {"no", "n", "false", "unavailable", "out of stock", "sold out"}
 
 
-def normalizar_stock(bruto: str, fila: int) -> tuple[int | None, bool]:
-    """Devuelve la cantidad y la disponibilidad.
+def normalize_stock(raw: str, row: int) -> tuple[int | None, bool]:
+    """Return the quantity and the availability.
 
-    Un `yes` establece con certeza que hay existencias pero no cuántas, así que
-    la cantidad queda a `None` y la disponibilidad a `True` (A2.2).
+    A `yes` establishes with certainty that there is stock but not how much, so
+    the quantity stays `None` and availability becomes `True` (A2.2).
     """
-    valor = (bruto or "").strip()
-    if not valor:
-        raise CatalogoAmbiguo(fila, "stock", bruto, "sin existencias declaradas")
+    value = (raw or "").strip()
+    if not value:
+        raise AmbiguousCatalog(row, "stock", raw, "no stock declared")
 
-    if _SOLO_DIGITOS.match(valor):
-        cantidad = int(valor)
-        return cantidad, cantidad > 0
+    if _ONLY_DIGITS.match(value):
+        quantity = int(value)
+        return quantity, quantity > 0
 
-    plano = valor.lower()
-    if plano in _SI_HAY:
+    plain = value.lower()
+    if plain in _IN_STOCK_WORDS:
         return None, True
-    if plano in _NO_HAY:
+    if plain in _OUT_OF_STOCK_WORDS:
         return None, False
 
-    raise CatalogoAmbiguo(fila, "stock", bruto, "no dice ni cantidad ni disponibilidad")
+    raise AmbiguousCatalog(row, "stock", raw, "states neither quantity nor availability")
 
 
-def normalizar_categoria(bruto: str) -> str:
-    """Recorta espacios, unifica mayúsculas y equipara `and` con `&`.
+def normalize_category(raw: str) -> str:
+    """Trim spaces, unify casing and treat `and` as `&`.
 
-    17 valores literales del fichero corresponden a 11 categorías reales.
+    17 literal values in the file correspond to 11 real categories.
     """
-    valor = " ".join((bruto or "").split())
-    valor = re.sub(r"(?i)\band\b", "&", valor)
-    valor = " ".join(valor.split())
-    return " ".join(palabra.capitalize() if palabra != "&" else "&" for palabra in valor.split())
+    value = " ".join((raw or "").split())
+    value = re.sub(r"(?i)\band\b", "&", value)
+    value = " ".join(value.split())
+    return " ".join(word.capitalize() if word != "&" else "&" for word in value.split())
 
 
-def _lista(bruto: str, separador: str = "|") -> list[str]:
-    return [parte.strip() for parte in (bruto or "").split(separador) if parte.strip()]
+def _list_of(raw: str, separator: str = "|") -> list[str]:
+    return [part.strip() for part in (raw or "").split(separator) if part.strip()]
 
 
-def _booleano(bruto: str, fila: int, columna: str) -> bool | None:
-    valor = (bruto or "").strip().lower()
-    if not valor:
+def _boolean(raw: str, row: int, column: str) -> bool | None:
+    value = (raw or "").strip().lower()
+    if not value:
         return None
-    if valor in _SI_HAY:
+    if value in _IN_STOCK_WORDS:
         return True
-    if valor in _NO_HAY:
+    if value in _OUT_OF_STOCK_WORDS:
         return False
-    raise CatalogoAmbiguo(fila, columna, bruto, "no es un valor booleano reconocible")
+    raise AmbiguousCatalog(row, column, raw, "not a recognisable boolean value")
 
 
-def _entero(bruto: str, fila: int, columna: str) -> int | None:
-    valor = (bruto or "").strip()
-    if not valor:
+def _integer(raw: str, row: int, column: str) -> int | None:
+    value = (raw or "").strip()
+    if not value:
         return None
-    if not _SOLO_DIGITOS.match(valor):
-        raise CatalogoAmbiguo(fila, columna, bruto, "no es un entero")
-    return int(valor)
+    if not _ONLY_DIGITS.match(value):
+        raise AmbiguousCatalog(row, column, raw, "not an integer")
+    return int(value)
 
 
-def _decimal(bruto: str, fila: int, columna: str) -> float | None:
-    valor = (bruto or "").strip()
-    if not valor:
+def _decimal_number(raw: str, row: int, column: str) -> float | None:
+    value = (raw or "").strip()
+    if not value:
         return None
     try:
-        return float(valor.replace(",", "."))
+        return float(value.replace(",", "."))
     except ValueError as error:
-        raise CatalogoAmbiguo(fila, columna, bruto, "no es un número") from error
+        raise AmbiguousCatalog(row, column, raw, "not a number") from error
 
 
 # --------------------------------------------------------------------------
-# Calidad de la descripción
+# Description quality
 # --------------------------------------------------------------------------
 
-_MINIMO_DESCRIPCION = 25
+_MINIMUM_DESCRIPTION_LENGTH = 25
 
 
-def calidad_de_descripcion(descripcion: str) -> str:
-    """`poor` cuando la descripción no permite construir una razón (A2.2)."""
-    limpia = " ".join((descripcion or "").split())
-    if len(limpia) < _MINIMO_DESCRIPCION:
-        return "poor"
-    return "ok"
+def description_quality_of(description: str) -> str:
+    """`poor` when the description does not allow building a reason (A2.2)."""
+    clean = " ".join((description or "").split())
+    return "poor" if len(clean) < _MINIMUM_DESCRIPTION_LENGTH else "ok"
 
 
 # --------------------------------------------------------------------------
-# Apertura de recipient
+# Opening up recipient
 # --------------------------------------------------------------------------
 
 
-def abrir_recipient(original: list[str], product_type: str | None, exclusivos: set[str]) -> list[str]:
-    """Añade `anyone` a todo producto que pueda llevarlo (A2.2).
+def open_recipient(
+    original: list[str], product_type: str | None, gender_specific_types: set[str]
+) -> list[str]:
+    """Add `anyone` to every product that can carry it (A2.2).
 
-    Conserva el valor original: el teclado mecánico queda como `him` **y**
-    `anyone`. Solo se quedan sin `anyone` lo marcado `kids` y lo que el
-    vocabulario declara exclusivo de un género con `gender_specific`.
+    The original value is kept: the mechanical keyboard stays `him` **and**
+    `anyone`. Only products marked `kids` and those the vocabulary declares
+    gender specific are left without `anyone`.
     """
-    valores = list(original)
-    if "kids" in valores:
+    values = list(original)
+    if "kids" in values:
         return ["kids"]
-    if product_type in exclusivos:
-        return valores
-    if "anyone" not in valores:
-        valores.append("anyone")
-    return valores
+    if product_type in gender_specific_types:
+        return values
+    if "anyone" not in values:
+        values.append("anyone")
+    return values
 
 
-def tipos_exclusivos_de_genero(ruta_vocabularios: Path) -> set[str]:
-    vocabulario = yaml.safe_load(Path(ruta_vocabularios).read_text(encoding="utf-8"))
-    tipos = vocabulario.get("product_type", {})
+def gender_specific_product_types(vocabularies_path: Path | str) -> set[str]:
+    """The product types the vocabulary marks as exclusive to one gender."""
+    vocabulary = yaml.safe_load(Path(vocabularies_path).read_text(encoding="utf-8"))
+    types = vocabulary.get("product_type", {})
     return {
-        clave
-        for clave, definicion in tipos.items()
-        if isinstance(definicion, dict) and definicion.get("gender_specific")
+        key
+        for key, definition in types.items()
+        if isinstance(definition, dict) and definition.get("gender_specific")
     }
 
 
 # --------------------------------------------------------------------------
-# Fusión de duplicados
+# Merging duplicates
 # --------------------------------------------------------------------------
 
 
-def _huella(fila: dict[str, str]) -> tuple[str, str, str]:
-    """Nombre normalizado + precio + descripción, que es la regla de A2.2."""
-    nombre = " ".join((fila.get("name") or "").split()).lower()
-    precio = (fila.get("price_eur") or "").strip()
-    descripcion = " ".join((fila.get("description") or "").split()).lower()
-    return nombre, precio, descripcion
+def _fingerprint(row: dict[str, str]) -> tuple[str, str, str]:
+    """Normalized name plus price plus description, which is the rule of A2.2."""
+    name = " ".join((row.get("name") or "").split()).lower()
+    price = (row.get("price_eur") or "").strip()
+    description = " ".join((row.get("description") or "").split()).lower()
+    return name, price, description
 
 
 # --------------------------------------------------------------------------
-# La canonicalización completa
+# The full canonicalization
 # --------------------------------------------------------------------------
 
 
-def canonicalizar(
-    ruta_csv: str | Path,
-    ruta_vocabularios: str | Path,
-    tipos_por_producto: dict[str, str] | None = None,
-) -> tuple[list[ProductoCanonico], list[Aviso]]:
-    """Lee el CSV y devuelve los productos canónicos y los avisos de calidad.
+def canonicalize(
+    csv_path: str | Path,
+    vocabularies_path: str | Path,
+    product_types_by_id: dict[str, str] | None = None,
+) -> tuple[list[CanonicalProduct], list[QualityWarning]]:
+    """Read the CSV and return the canonical products and the quality warnings.
 
-    `tipos_por_producto` asocia cada `product_id` con su `product_type`. Lo
-    aporta quien tenga la capa semántica delante; sin él, la apertura de
-    `recipient` no puede reconocer los exclusivos de género y se detiene, que es
-    preferible a abrirlos por descuido.
+    `product_types_by_id` maps each `product_id` to its `product_type`. It is
+    supplied by whoever has the semantic layer at hand; without it, opening up
+    `recipient` cannot recognise the gender specific types.
     """
-    exclusivos = tipos_exclusivos_de_genero(Path(ruta_vocabularios))
-    tipos_por_producto = tipos_por_producto or {}
+    gender_specific_types = gender_specific_product_types(Path(vocabularies_path))
+    product_types_by_id = product_types_by_id or {}
 
-    with Path(ruta_csv).open(encoding="utf-8-sig", newline="") as fichero:
-        filas = list(csv.DictReader(fichero))
+    with Path(csv_path).open(encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.DictReader(handle))
 
-    avisos: list[Aviso] = []
-    grupos: dict[tuple[str, str, str], list[tuple[int, dict[str, str]]]] = {}
-    for indice, fila in enumerate(filas, start=2):  # la 1 es la cabecera
-        grupos.setdefault(_huella(fila), []).append((indice, fila))
+    warnings: list[QualityWarning] = []
+    groups: dict[tuple[str, str, str], list[tuple[int, dict[str, str]]]] = {}
+    for index, row in enumerate(rows, start=2):  # row 1 is the header
+        groups.setdefault(_fingerprint(row), []).append((index, row))
 
-    canonicos: list[ProductoCanonico] = []
-    for grupo in grupos.values():
-        ordenado = sorted(grupo, key=lambda par: par[1]["product_id"])
-        numero_de_fila, principal = ordenado[0]
-        absorbidos = ordenado[1:]
+    canonical: list[CanonicalProduct] = []
+    for group in groups.values():
+        ordered = sorted(group, key=lambda pair: pair[1]["product_id"])
+        row_number, main = ordered[0]
+        absorbed = ordered[1:]
 
-        precio = normalizar_precio(principal.get("price_eur", ""), numero_de_fila)
-        cantidad, disponible = normalizar_stock(principal.get("stock", ""), numero_de_fila)
-        categoria = normalizar_categoria(principal.get("category", ""))
-        product_id = principal["product_id"]
+        price = normalize_price(main.get("price_eur", ""), row_number)
+        quantity, available = normalize_stock(main.get("stock", ""), row_number)
+        category = normalize_category(main.get("category", ""))
+        product_id = main["product_id"]
 
-        recipient_original = _lista(principal.get("recipient", ""))
-        recipient = abrir_recipient(
-            recipient_original, tipos_por_producto.get(product_id), exclusivos
+        recipient = open_recipient(
+            _list_of(main.get("recipient", "")),
+            product_types_by_id.get(product_id),
+            gender_specific_types,
         )
+        description = (main.get("description") or "").strip()
 
-        descripcion = (principal.get("description") or "").strip()
-
-        producto = ProductoCanonico(
+        product = CanonicalProduct(
             product_id=product_id,
-            alt_product_ids=[fila["product_id"] for _, fila in absorbidos],
-            name=(principal.get("name") or "").strip(),
-            category=categoria,
+            alt_product_ids=[row["product_id"] for _, row in absorbed],
+            name=(main.get("name") or "").strip(),
+            category=category,
             secondary_categories=sorted(
                 {
-                    normalizar_categoria(fila.get("category", ""))
-                    for _, fila in absorbidos
-                    if normalizar_categoria(fila.get("category", "")) != categoria
+                    normalize_category(row.get("category", ""))
+                    for _, row in absorbed
+                    if normalize_category(row.get("category", "")) != category
                 }
             ),
-            subcategory=(principal.get("subcategory") or "").strip(),
-            brand=(principal.get("brand") or "").strip(),
-            price=precio,
-            stock=cantidad,
-            in_stock=disponible,
+            subcategory=(main.get("subcategory") or "").strip(),
+            brand=(main.get("brand") or "").strip(),
+            price=price,
+            stock=quantity,
+            in_stock=available,
             recipient=recipient,
-            occasion=_lista(principal.get("occasion", "")),
-            tags=_lista(principal.get("tags", "")),
-            color=(principal.get("color") or "").strip(),
-            material=(principal.get("material") or "").strip(),
-            gift_wrap=_booleano(principal.get("gift_wrap", ""), numero_de_fila, "gift_wrap"),
-            shipping_days=_entero(
-                principal.get("shipping_days", ""), numero_de_fila, "shipping_days"
-            ),
-            description=descripcion,
-            description_quality=calidad_de_descripcion(descripcion),
-            rating=_decimal(principal.get("rating", ""), numero_de_fila, "rating"),
-            reviews_count=_entero(
-                principal.get("reviews_count", ""), numero_de_fila, "reviews_count"
-            ),
+            occasion=_list_of(main.get("occasion", "")),
+            tags=_list_of(main.get("tags", "")),
+            color=(main.get("color") or "").strip(),
+            material=(main.get("material") or "").strip(),
+            gift_wrap=_boolean(main.get("gift_wrap", ""), row_number, "gift_wrap"),
+            shipping_days=_integer(main.get("shipping_days", ""), row_number, "shipping_days"),
+            description=description,
+            description_quality=description_quality_of(description),
+            rating=_decimal_number(main.get("rating", ""), row_number, "rating"),
+            reviews_count=_integer(main.get("reviews_count", ""), row_number, "reviews_count"),
         )
-        canonicos.append(producto)
+        canonical.append(product)
 
-        for _, fila in absorbidos:
-            avisos.append(
-                Aviso("duplicado", product_id, f"absorbe {fila['product_id']}")
+        for _, row in absorbed:
+            warnings.append(
+                QualityWarning("duplicate", product_id, f"absorbs {row['product_id']}")
             )
-        if precio is None:
-            avisos.append(Aviso("sin_precio", product_id, "el fichero no trae precio"))
-        if producto.rating is None:
-            avisos.append(Aviso("sin_valoracion", product_id, "el fichero no trae nota"))
-        if not producto.occasion:
-            avisos.append(Aviso("sin_ocasion", product_id, "el fichero no trae ocasión"))
-        if producto.description_quality == "poor":
-            avisos.append(
-                Aviso("descripcion_pobre", product_id, "no permite construir una razón")
+        if price is None:
+            warnings.append(QualityWarning("no_price", product_id, "the file carries no price"))
+        if product.rating is None:
+            warnings.append(QualityWarning("no_rating", product_id, "the file carries no rating"))
+        if not product.occasion:
+            warnings.append(
+                QualityWarning("no_occasion", product_id, "the file carries no occasion")
+            )
+        if product.description_quality == "poor":
+            warnings.append(
+                QualityWarning("poor_description", product_id, "no reason can be built from it")
             )
 
-    canonicos.sort(key=lambda producto: producto.product_id)
-    return canonicos, avisos
+    canonical.sort(key=lambda product: product.product_id)
+    return canonical, warnings
 
 
-def resolver_identificador(
-    identificador: str, canonicos: list[ProductoCanonico]
-) -> ProductoCanonico | None:
-    """Devuelve el producto canónico de un `product_id` o de un `alt_product_id`.
+def resolve_identifier(
+    identifier: str, canonical: list[CanonicalProduct]
+) -> CanonicalProduct | None:
+    """Return the canonical product of a `product_id` or of an `alt_product_id`.
 
-    Un identificador absorbido no es un producto que no existe: resuelve al
-    canónico y no produce `product_not_found`.
+    An absorbed identifier is not a product that does not exist: it resolves to
+    the canonical one and never produces `product_not_found`.
     """
-    for producto in canonicos:
-        if identificador == producto.product_id or identificador in producto.alt_product_ids:
-            return producto
+    for product in canonical:
+        if identifier == product.product_id or identifier in product.alt_product_ids:
+            return product
     return None

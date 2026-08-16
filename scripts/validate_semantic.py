@@ -5,11 +5,11 @@ catálogo canónico o si alguna relación no es íntegra. **Código de error sig
 que no se despliega**: es una puerta, no un respaldo (A3.4).
 
 Valida **forma e integridad, no reinterpreta el catálogo**. No comprueba si
-`equivalent` se eligió bien —eso es una lectura del texto y ocurre en el
+`equivalent` se eligió bien —eso es una lectura del text_ y ocurre en el
 enriquecimiento—, sino que lo escrito sea consistente consigo mismo.
 
-El universo de la integridad referencial son **los identificadores canónicos**,
-no los 152 brutos: un `alt_product_id` es un alias de identidad, no un nodo.
+El universe de la integridad referencial son **los identifiers canónicos**,
+no los 152 brutos: un `alt_product_id` es un aliases_ de identidad, no un nodo.
 """
 
 from __future__ import annotations
@@ -25,9 +25,12 @@ import yaml  # noqa: E402
 
 import normalization  # noqa: E402
 
-VERSION_DE_VOCABULARIO = 4
-VOCABULARIOS_CERRADOS = (
-    "product_type",
+VOCABULARY_VERSION = 4
+# `product_type` NO está aquí: es el único vocabulary **controlado pero
+# abierto**, porque un product nuevo introduce legítimamente un kind_ nuevo con
+# sus aliases_. De él se comprueba que exista en el fichero —no que pertenezca a una
+# lista congelada— y que ningún aliases_ resuelva a dos types_ distintos.
+CLOSED_VOCABULARIES = (
     "use_case",
     "functional_family",
     "gift_risk",
@@ -36,116 +39,139 @@ VOCABULARIOS_CERRADOS = (
 RELATION_TYPE = {"equivalent", "same_function"}
 
 
-def _entradas(capa: dict | list) -> dict[str, dict]:
-    productos = capa["products"] if isinstance(capa, dict) and "products" in capa else capa
-    if isinstance(productos, list):
-        return {entrada["product_id"]: entrada for entrada in productos}
-    return productos
+def _entradas(layer: dict | list) -> dict[str, dict]:
+    products = layer["products"] if isinstance(layer, dict) and "products" in layer else layer
+    if isinstance(products, list):
+        return {entrada["product_id"]: entrada for entrada in products}
+    return products
 
 
-def validar(ruta_csv: Path, ruta_semantica: Path, ruta_vocabularios: Path) -> list[str]:
-    """Devuelve la lista de fallos. Vacía significa que la puerta se abre."""
-    fallos: list[str] = []
+def validate(csv_path: Path, semantic_layer_path: Path, vocabularies_path: Path) -> list[str]:
+    """Devuelve la lista de failures. Vacía significa que la puerta se abre."""
+    failures: list[str] = []
 
-    capa = json.loads(ruta_semantica.read_text(encoding="utf-8"))
-    entradas = _entradas(capa)
-    vocabulario = yaml.safe_load(ruta_vocabularios.read_text(encoding="utf-8"))
+    layer = json.loads(semantic_layer_path.read_text(encoding="utf-8"))
+    entries = _entradas(layer)
+    vocabulary = yaml.safe_load(vocabularies_path.read_text(encoding="utf-8"))
 
-    version_declarada = (
-        capa.get("vocabulary_version") if isinstance(capa, dict) else None
+    declared_version = (
+        layer.get("vocabulary_version") if isinstance(layer, dict) else None
     )
-    if version_declarada != VERSION_DE_VOCABULARIO:
-        fallos.append(
-            f"la capa declara vocabulary_version {version_declarada!r} "
-            f"y se esperaba {VERSION_DE_VOCABULARIO}"
+    if declared_version != VOCABULARY_VERSION:
+        failures.append(
+            f"la layer declara vocabulary_version {declared_version!r} "
+            f"y se esperaba {VOCABULARY_VERSION}"
         )
-    if vocabulario.get("version") != VERSION_DE_VOCABULARIO:
-        fallos.append(
-            f"el vocabulario declara version {vocabulario.get('version')!r} "
-            f"y se esperaba {VERSION_DE_VOCABULARIO}"
+    if vocabulary.get("version") != VOCABULARY_VERSION:
+        failures.append(
+            f"el vocabulary declara version {vocabulary.get('version')!r} "
+            f"y se esperaba {VOCABULARY_VERSION}"
         )
 
-    tipos_por_producto = {
-        product_id: entrada.get("product_type") for product_id, entrada in entradas.items()
+    product_types_by_id = {
+        product_id: entrada.get("product_type") for product_id, entrada in entries.items()
     }
-    canonicos, _ = normalization.canonicalizar(
-        ruta_csv, ruta_vocabularios, tipos_por_producto
+    canonicos, _ = normalization.canonicalize(
+        csv_path, vocabularies_path, product_types_by_id
     )
-    identificadores = {producto.product_id for producto in canonicos}
+    identifiers = {product.product_id for product in canonicos}
 
     # Igualdad exacta de conjuntos: ni ausentes ni huérfanos.
-    faltan = sorted(identificadores - set(entradas))
-    huerfanos = sorted(set(entradas) - identificadores)
-    if faltan:
-        fallos.append(f"sin entrada semántica: {faltan}")
-    if huerfanos:
-        fallos.append(f"entradas huérfanas, sin producto canónico: {huerfanos}")
+    missing = sorted(identifiers - set(entries))
+    orphans = sorted(set(entries) - identifiers)
+    if missing:
+        failures.append(f"sin entrada semántica: {missing}")
+    if orphans:
+        failures.append(f"entries huérfanas, sin product canónico: {orphans}")
 
-    for product_id, entrada in sorted(entradas.items()):
-        for campo in VOCABULARIOS_CERRADOS:
-            if campo not in entrada:
+    for product_id, entrada in sorted(entries.items()):
+        for field in CLOSED_VOCABULARIES:
+            if field not in entrada:
                 continue
-            valor = entrada[campo]
-            valores = valor if isinstance(valor, list) else [valor]
-            fuera = [v for v in valores if v not in vocabulario.get(campo, {})]
+            value_ = entrada[field]
+            valores = value_ if isinstance(value_, list) else [value_]
+            fuera = [v for v in valores if v not in vocabulary.get(field, {})]
             if fuera:
-                fallos.append(f"{product_id}: {campo} fuera del vocabulario: {fuera}")
+                failures.append(f"{product_id}: {field} fuera del vocabulary: {fuera}")
+
+        kind_ = entrada.get("product_type")
+        if not kind_:
+            failures.append(f"{product_id}: product_type vacío")
+        elif kind_ not in vocabulary.get("product_type", {}):
+            failures.append(
+                f"{product_id}: product_type {kind_!r} no está declarado en el vocabulary. "
+                "Puede crecer, pero se declara: no se usa sin darlo de alta"
+            )
 
         if not entrada.get("use_case"):
-            fallos.append(f"{product_id}: use_case vacío")
+            failures.append(f"{product_id}: use_case vacío")
         if not entrada.get("functional_family"):
-            fallos.append(f"{product_id}: functional_family vacío")
+            failures.append(f"{product_id}: functional_family vacío")
 
-    parejas_vistas: set[tuple[str, str]] = set()
-    for product_id, entrada in sorted(entradas.items()):
-        for vinculo in entrada.get("pairs_with") or []:
-            otro = vinculo["product_id"] if isinstance(vinculo, dict) else vinculo
-            if otro not in identificadores:
-                fallos.append(f"{product_id}: pairs_with apunta a {otro}, que no es canónico")
-            if otro == product_id:
-                fallos.append(f"{product_id}: pairs_with apunta a sí mismo")
+    # Un aliases_ no puede resolver a dos types_ distintos: sería una ambigüedad que
+    # el servicio no puede deshacer al leer una consulta.
+    owners: dict[str, str] = {}
+    for kind_, definition in vocabulary.get("product_type", {}).items():
+        for aliases_ in (definition.get("aliases", []) if isinstance(definition, dict) else []):
+            key_ = aliases_.lower()
+            if key_ in owners and owners[key_] != kind_:
+                failures.append(
+                    f"el aliases_ {aliases_!r} resuelve a {owners[key_]!r} y a {kind_!r}"
+                )
+            owners[key_] = kind_
+        if not (definition.get("definicion") if isinstance(definition, dict) else None):
+            failures.append(f"product_type {kind_!r} sin definition")
 
-        for vinculo in entrada.get("alternative_to") or []:
-            if not isinstance(vinculo, dict) or "product_id" not in vinculo:
-                fallos.append(f"{product_id}: alternative_to sin product_id")
+    pairs_seen: set[tuple[str, str]] = set()
+    for product_id, entrada in sorted(entries.items()):
+        for link in entrada.get("pairs_with") or []:
+            other = link["product_id"] if isinstance(link, dict) else link
+            if other not in identifiers:
+                failures.append(f"{product_id}: pairs_with apunta a {other}, que no es canónico")
+            if other == product_id:
+                failures.append(f"{product_id}: pairs_with apunta a sí mismo")
+
+        for link in entrada.get("alternative_to") or []:
+            if not isinstance(link, dict) or "product_id" not in link:
+                failures.append(f"{product_id}: alternative_to sin product_id")
                 continue
-            otro = vinculo["product_id"]
-            if otro not in identificadores:
-                fallos.append(
-                    f"{product_id}: alternative_to apunta a {otro}, que no es canónico"
+            other = link["product_id"]
+            if other not in identifiers:
+                failures.append(
+                    f"{product_id}: alternative_to apunta a {other}, que no es canónico"
                 )
-            if otro == product_id:
-                fallos.append(f"{product_id}: alternative_to apunta a sí mismo")
-            if vinculo.get("relation_type") not in RELATION_TYPE:
-                fallos.append(
-                    f"{product_id} → {otro}: relation_type "
-                    f"{vinculo.get('relation_type')!r} no es válido"
+            if other == product_id:
+                failures.append(f"{product_id}: alternative_to apunta a sí mismo")
+            if link.get("relation_type") not in RELATION_TYPE:
+                failures.append(
+                    f"{product_id} → {other}: relation_type "
+                    f"{link.get('relation_type')!r} no es válido"
                 )
-            pareja = tuple(sorted((product_id, otro)))
-            if pareja in parejas_vistas:
-                fallos.append(f"{pareja[0]} · {pareja[1]}: la pareja está persistida dos veces")
-            parejas_vistas.add(pareja)
-            if product_id != pareja[0]:
-                fallos.append(
-                    f"{pareja[0]} · {pareja[1]}: persistida bajo el identificador mayor"
+            pair = tuple(sorted((product_id, other)))
+            if pair in pairs_seen:
+                failures.append(f"{pair[0]} · {pair[1]}: la pair está persistida dos veces")
+            pairs_seen.add(pair)
+            if product_id != pair[0]:
+                failures.append(
+                    f"{pair[0]} · {pair[1]}: persistida bajo el identificador larger"
                 )
 
-    return fallos
+    return failures
 
 
 def main() -> int:
-    argumentos = argparse.ArgumentParser(description="Puerta de cobertura de la capa semántica")
-    argumentos.add_argument("--csv", required=True)
-    argumentos.add_argument("--semantic", required=True)
-    argumentos.add_argument("--vocabularies", default="data/vocabularies.yaml")
-    opciones = argumentos.parse_args()
+    parser = argparse.ArgumentParser(description="Puerta de cobertura de la layer semántica")
+    parser.add_argument("--csv", required=True)
+    parser.add_argument("--semantic", required=True)
+    parser.add_argument("--vocabularies", default="data/vocabularies.yaml")
+    options = parser.parse_args()
 
-    fallos = validar(
-        Path(opciones.csv), Path(opciones.semantic), Path(opciones.vocabularies)
+    failures = validate(
+        Path(options.csv), Path(options.semantic), Path(options.vocabularies)
     )
-    if fallos:
+    if failures:
         print("La puerta NO se abre. No se despliega.\n")
-        for fallo in fallos:
+        for fallo in failures:
             print(f"  · {fallo}")
         return 1
 

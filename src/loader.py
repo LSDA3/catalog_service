@@ -1,15 +1,15 @@
-"""Construye el modelo canónico en memoria al arrancar el servicio.
+"""Builds the canonical in-memory model when the service starts.
 
-Hace tres cosas, y ninguna más:
+It does three things and nothing else:
 
-1. Llama a `normalization.py` sobre el CSV y recibe los productos canónicos.
-2. Lee `semantic_layer.json` y une cada entrada con su producto canónico.
-3. Construye el modelo en memoria que consume el resto del servicio.
+1. Calls `normalization.py` on the CSV and receives the canonical products.
+2. Reads `semantic_layer.json` and joins each entry with its canonical product.
+3. Builds the in-memory model the rest of the service consumes.
 
-**No transforma nada por su cuenta.** Si aquí aparece una regla de limpieza del
-CSV, está duplicada: su sitio es `normalization.py`. Dos implementaciones que se
-separen producen dos catálogos distintos, y la puerta de cobertura de A3.4
-dejaría de significar nada.
+**It transforms nothing on its own.** If a CSV cleaning rule shows up here it is
+duplicated: its place is `normalization.py`. Two implementations that drift apart
+produce two different catalogs, and the coverage gate of A3.4 would stop meaning
+anything.
 """
 
 from __future__ import annotations
@@ -21,133 +21,131 @@ import normalization
 from models import Product
 
 
-class CapaSemanticaIncompleta(Exception):
-    """El artefacto derivado no cubre exactamente el catálogo canónico.
+class IncompleteSemanticLayer(Exception):
+    """The derived artifact does not cover exactly the canonical catalog.
 
-    Es el invariante de A3.4 visto desde el arranque: si los dos conjuntos no
-    coinciden, el servicio no puede responder por los productos que faltan y
-    tampoco puede inventarles clasificación.
+    It is the invariant of A3.4 seen from start-up: if the two sets do not match,
+    the service cannot answer for the missing products and cannot invent a
+    classification for them either.
     """
 
 
-def _resolver_relaciones_inversas(
-    entradas: dict[str, dict], campo: str
-) -> dict[str, list[str]]:
-    """Devuelve el campo de relación resuelto desde los dos extremos.
+def _resolve_both_ends(entries: dict[str, dict], field: str) -> dict[str, list[str]]:
+    """Return the relation field resolved from both ends.
 
-    Una relación se persiste **una sola vez**, bajo el `product_id` menor. Que el
-    otro extremo la conozca es trabajo del loader, no del fichero: duplicarla en
-    el artefacto abriría la puerta a que los dos lados dejaran de coincidir.
+    A relation is persisted **once**, under the smaller `product_id`. Making the
+    other end aware of it is the loader's job, not the file's: duplicating it in
+    the artifact would open the door to the two sides drifting apart.
     """
-    resuelto: dict[str, list[str]] = {clave: [] for clave in entradas}
-    for product_id, entrada in entradas.items():
-        for vinculo in entrada.get(campo) or []:
-            otro = vinculo["product_id"] if isinstance(vinculo, dict) else vinculo
-            if otro not in resuelto:
+    resolved: dict[str, list[str]] = {key: [] for key in entries}
+    for product_id, entry in entries.items():
+        for link in entry.get(field) or []:
+            other = link["product_id"] if isinstance(link, dict) else link
+            if other not in resolved:
                 continue
-            if otro not in resuelto[product_id]:
-                resuelto[product_id].append(otro)
-            if product_id not in resuelto[otro]:
-                resuelto[otro].append(product_id)
-    return {clave: sorted(valores) for clave, valores in resuelto.items()}
+            if other not in resolved[product_id]:
+                resolved[product_id].append(other)
+            if product_id not in resolved[other]:
+                resolved[other].append(product_id)
+    return {key: sorted(values) for key, values in resolved.items()}
 
 
-def _tipo_de_relacion(entradas: dict[str, dict]) -> dict[tuple[str, str], str]:
-    """El `relation_type` de cada vínculo `alternative_to`, en los dos sentidos.
+def _relation_types(entries: dict[str, dict]) -> dict[tuple[str, str], str]:
+    """The `relation_type` of every `alternative_to` link, in both directions.
 
-    Viaja con la relación, no con el producto (B4.3), así que se guarda aparte y
-    no entra en `Product`.
+    It travels with the relation, not with the product (B4.3), so it is kept
+    apart and does not enter `Product`.
     """
-    tipos: dict[tuple[str, str], str] = {}
-    for product_id, entrada in entradas.items():
-        for vinculo in entrada.get("alternative_to") or []:
-            if not isinstance(vinculo, dict):
+    types: dict[tuple[str, str], str] = {}
+    for product_id, entry in entries.items():
+        for link in entry.get("alternative_to") or []:
+            if not isinstance(link, dict):
                 continue
-            otro = vinculo["product_id"]
-            clase = vinculo.get("relation_type", "same_function")
-            tipos[(product_id, otro)] = clase
-            tipos[(otro, product_id)] = clase
-    return tipos
+            other = link["product_id"]
+            kind = link.get("relation_type", "same_function")
+            types[(product_id, other)] = kind
+            types[(other, product_id)] = kind
+    return types
 
 
-def cargar(
-    ruta_csv: str | Path,
-    ruta_vocabularios: str | Path,
-    ruta_capa_semantica: str | Path,
+def load(
+    csv_path: str | Path,
+    vocabularies_path: str | Path,
+    semantic_layer_path: str | Path,
 ) -> tuple[list[Product], dict[str, dict], dict[tuple[str, str], str]]:
-    """Devuelve los productos, los campos que no viajan y los tipos de relación.
+    """Return the products, the fields that do not travel and the relation types.
 
-    Lo segundo son los datos que el servicio necesita y que **no forman parte de
-    `Product`** (B4.6): `description_quality`, que ya actuó en el orden; `tags`,
-    que no participa; `stock`, cuya cantidad no aporta conducta; y
-    `alt_product_ids`, que resuelve identificadores absorbidos.
+    The second one holds what the service needs and is **not part of `Product`**
+    (B4.6): `description_quality`, whose effect is already applied in the
+    ordering; `tags`, which takes no part; `stock`, whose quantity adds no
+    behaviour; and `alt_product_ids`, which resolves absorbed identifiers.
     """
-    capa = json.loads(Path(ruta_capa_semantica).read_text(encoding="utf-8"))
-    entradas = capa["products"] if isinstance(capa, dict) and "products" in capa else capa
-    if isinstance(entradas, list):
-        entradas = {entrada["product_id"]: entrada for entrada in entradas}
+    layer = json.loads(Path(semantic_layer_path).read_text(encoding="utf-8"))
+    entries = layer["products"] if isinstance(layer, dict) and "products" in layer else layer
+    if isinstance(entries, list):
+        entries = {entry["product_id"]: entry for entry in entries}
 
-    tipos_por_producto = {
-        product_id: entrada["product_type"] for product_id, entrada in entradas.items()
+    product_types_by_id = {
+        product_id: entry["product_type"] for product_id, entry in entries.items()
     }
 
-    canonicos, _avisos = normalization.canonicalizar(
-        ruta_csv, ruta_vocabularios, tipos_por_producto
+    canonical, _warnings = normalization.canonicalize(
+        csv_path, vocabularies_path, product_types_by_id
     )
 
-    identificadores_del_csv = {producto.product_id for producto in canonicos}
-    if identificadores_del_csv != set(entradas):
-        faltan = sorted(identificadores_del_csv - set(entradas))
-        sobran = sorted(set(entradas) - identificadores_del_csv)
-        raise CapaSemanticaIncompleta(
-            f"sin entrada semántica: {faltan or 'ninguno'}; "
-            f"sin producto en el catálogo: {sobran or 'ninguno'}"
+    identifiers_in_csv = {product.product_id for product in canonical}
+    if identifiers_in_csv != set(entries):
+        missing = sorted(identifiers_in_csv - set(entries))
+        orphans = sorted(set(entries) - identifiers_in_csv)
+        raise IncompleteSemanticLayer(
+            f"without semantic entry: {missing or 'none'}; "
+            f"without a product in the catalog: {orphans or 'none'}"
         )
 
-    pairs_with = _resolver_relaciones_inversas(entradas, "pairs_with")
-    alternative_to = _resolver_relaciones_inversas(entradas, "alternative_to")
-    tipos_de_relacion = _tipo_de_relacion(entradas)
+    pairs_with = _resolve_both_ends(entries, "pairs_with")
+    alternative_to = _resolve_both_ends(entries, "alternative_to")
+    relation_types = _relation_types(entries)
 
-    productos: list[Product] = []
-    fuera_del_contrato: dict[str, dict] = {}
+    products: list[Product] = []
+    off_contract: dict[str, dict] = {}
 
-    for canonico in canonicos:
-        entrada = entradas[canonico.product_id]
-        productos.append(
+    for canonical_product in canonical:
+        entry = entries[canonical_product.product_id]
+        products.append(
             Product(
-                product_id=canonico.product_id,
-                name=canonico.name,
-                description=canonico.description,
-                price=canonico.price,
-                shipping_days=canonico.shipping_days,
-                gift_wrap=canonico.gift_wrap,
-                brand=canonico.brand,
-                color=canonico.color,
-                material=canonico.material,
-                in_stock=canonico.in_stock,
-                is_standalone_gift=bool(entrada.get("is_standalone_gift")),
-                category=canonico.category,
-                secondary_categories=canonico.secondary_categories,
-                subcategory=canonico.subcategory,
-                product_type=entrada["product_type"],
-                functional_family=list(entrada.get("functional_family") or []),
-                use_case=list(entrada.get("use_case") or []),
-                occasion=canonico.occasion,
-                recipient=canonico.recipient,
-                suitable_relationships=list(entrada.get("suitable_relationships") or []),
-                gift_risk=entrada.get("gift_risk", ""),
-                rating=canonico.rating,
-                reviews_count=canonico.reviews_count,
-                stocking_filler=bool(entrada.get("stocking_filler")),
-                pairs_with=pairs_with[canonico.product_id],
-                alternative_to=alternative_to[canonico.product_id],
+                product_id=canonical_product.product_id,
+                name=canonical_product.name,
+                description=canonical_product.description,
+                price=canonical_product.price,
+                shipping_days=canonical_product.shipping_days,
+                gift_wrap=canonical_product.gift_wrap,
+                brand=canonical_product.brand,
+                color=canonical_product.color,
+                material=canonical_product.material,
+                in_stock=canonical_product.in_stock,
+                is_standalone_gift=bool(entry.get("is_standalone_gift")),
+                category=canonical_product.category,
+                secondary_categories=canonical_product.secondary_categories,
+                subcategory=canonical_product.subcategory,
+                product_type=entry["product_type"],
+                functional_family=list(entry.get("functional_family") or []),
+                use_case=list(entry.get("use_case") or []),
+                occasion=canonical_product.occasion,
+                recipient=canonical_product.recipient,
+                suitable_relationships=list(entry.get("suitable_relationships") or []),
+                gift_risk=entry.get("gift_risk", ""),
+                rating=canonical_product.rating,
+                reviews_count=canonical_product.reviews_count,
+                stocking_filler=bool(entry.get("stocking_filler")),
+                pairs_with=pairs_with[canonical_product.product_id],
+                alternative_to=alternative_to[canonical_product.product_id],
             )
         )
-        fuera_del_contrato[canonico.product_id] = {
-            "description_quality": canonico.description_quality,
-            "tags": canonico.tags,
-            "stock": canonico.stock,
-            "alt_product_ids": canonico.alt_product_ids,
+        off_contract[canonical_product.product_id] = {
+            "description_quality": canonical_product.description_quality,
+            "tags": canonical_product.tags,
+            "stock": canonical_product.stock,
+            "alt_product_ids": canonical_product.alt_product_ids,
         }
 
-    return productos, fuera_del_contrato, tipos_de_relacion
+    return products, off_contract, relation_types

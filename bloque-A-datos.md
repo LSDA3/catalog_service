@@ -1380,6 +1380,7 @@ Comprobación de que el modelo de datos sostiene los seis escenarios que el brie
 
 | Versión | Cambio |
 |---|---|
+| v58 → v59 | **Se escriben los nombres que la especificación publica y que el documento no tenía.** B4 describía los envelopes con su forma JSON, y un ejemplo no necesita nombre; en cuanto se publican en un contrato legible por máquina, el **nombre del esquema es lo que lee indigo.ai**. Quedan fijados: cada respuesta se llama **como su operación** —`GetCategoriesResponse` y las otras cuatro— y se añade **un único nombre nuevo, `RelatedProduct`**, para el elemento de relacionados, que es un `Product` más su `relation_type` y por eso no puede llamarse `Product`. **Las rutas tampoco estaban**: son el `operation_id`, sin más, para que ruta, operación y esquema digan lo mismo. No cambia ninguna forma, ningún parámetro ni ninguna regla |
 | v57 → v58 | **El árbol de A3.9 gana `.gitignore`.** Era el segundo fichero que hay que crear para construir y que el mapa del repositorio no nombraba, después de `requirements.txt`. Deja fuera el entorno virtual y los temporales de Python, y sobre todo **`.env` y `*.key`**: es la red de seguridad de B6.5 contra subir una credencial por descuido, que en GitHub queda en el historial aunque se borre. **No cambia qué entra en la imagen** ni ninguna decisión de A3 |
 | v56 → v57 | **Se completa dónde exige cada operación `is_standalone_gift`, con una tabla de las cinco.** La versión anterior cerró `pairs_with`; quedaban fuera la navegación y el detalle, y la navegación **contradecía una cifra ya medida**: B4.7 declara 20 en Kitchen & Dining descontando solo los dos agotados, y con el corte aplicado salían 19. Queda escrito: **exigen `is_standalone_gift` la búsqueda y `alternative_to`; no lo exigen `pairs_with`, la navegación y el detalle**. `in_stock` sigue sin excepción. No cambia ningún parámetro ni ninguna forma de respuesta. Registro **B2ah** |
 | v55 → v56 | **Se escribe dónde corta `is_standalone_gift`, que estaba implícito y se implementaba mal.** B2.7 lo daba como corte invariante *"siempre"* y a la vez decía que lo no autónomo *"sigue disponible como complemento en el paso 9"*, y B4.3 que un accesorio llega legítimamente por `get_related_products`. Aplicado al pie de la letra, **`relation=pairs_with` se quedaba sin seis de las doce parejas del catálogo**. Queda dicho: corta al recomendar y en `alternative_to`, **no corta en `pairs_with`**. **`in_stock` no tiene excepción** y sigue cortando en todo el servicio. No cambia ningún parámetro, ni la forma de la respuesta, ni la precedencia. Registro **B2ag** |
@@ -3348,6 +3349,24 @@ Dos consecuencias:
 
 `get_related_products` añade metadatos **sobre la relación**, sin tocar la forma base del producto.
 
+#### Cómo se llama cada forma en la especificación
+
+Las tres formas base ya tienen nombre —`Product`, `ExcludedProduct` y `CategorySummary`—, y `NotApplied` lo tiene desde v20 → v21. **Los envelopes no lo tenían**, porque B4.7 los describe con su forma JSON y un ejemplo no necesita nombre. Al publicarlos en la especificación sí lo necesitan: **el nombre del esquema es lo que lee indigo.ai**.
+
+**Cada envelope se llama como su operación.** No hay nombre nuevo que aprender: el identificador de la respuesta es el de la operación que la produce.
+
+| Operación | Esquema de su respuesta |
+|---|---|
+| `get_categories` | `GetCategoriesResponse` |
+| `get_products_by_category` | `GetProductsByCategoryResponse` |
+| `find_products_by_criteria` | `FindProductsByCriteriaResponse` |
+| `get_related_products` | `GetRelatedProductsResponse` |
+| `get_product_details` | `GetProductDetailsResponse` |
+
+**Y un solo nombre más, `RelatedProduct`**: el elemento de `get_related_products`, que es un `Product` **más** su `relation_type`. Hace falta porque esa forma no es `Product` —lleva un campo que `Product` no tiene y no debe tener (B4.3)— y porque sin nombre propio no se puede publicar.
+
+**No hay ningún otro nombre.** Lo que no se publica no se bautiza.
+
 ### B4.3 Product · 26 campos
 
 #### Identidad y contenido
@@ -4537,6 +4556,18 @@ Se genera **desde la aplicación FastAPI**: definiciones de endpoints, modelos d
 ```
 FastAPI  →  OpenAPI generado  →  /openapi.json  →  importación en indigo.ai  →  las cinco Tools
 ```
+
+**Cada operación se llama igual en los tres sitios donde aparece: la ruta, el `operation_id` y el esquema de su respuesta.**
+
+```
+/get_categories             get_categories             GetCategoriesResponse
+/get_products_by_category   get_products_by_category   GetProductsByCategoryResponse
+/find_products_by_criteria  find_products_by_criteria  FindProductsByCriteriaResponse
+/get_related_products       get_related_products       GetRelatedProductsResponse
+/get_product_details        get_product_details        GetProductDetailsResponse
+```
+
+**Las rutas no son un nombre nuevo: son el nombre de la operación.** Una ruta con otro texto —`/products/search` para `find_products_by_criteria`— obliga a quien lea la especificación a sostener dos nombres para la misma cosa, y el primero que se ve en `/docs` es la ruta. `product_id` viaja como parámetro en `get_product_details`, igual que en las demás, y no dentro de la ruta.
 
 **No se mantiene una segunda especificación escrita a mano.** Un contrato que se edita aparte del código deja de describir lo desplegado en la primera semana.
 

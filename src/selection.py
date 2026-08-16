@@ -1,20 +1,20 @@
-"""Qué productos entran y en qué orden salen.
+"""Which products get in, and in which order they come out.
 
-Tres mecánicas separadas, y no se mezclan nunca:
+Three separate mechanics, and they never mix:
 
-1. **La restricción de coincidencia exacta** (B2.6). Cuando el cliente ha pedido
-   un objeto concreto y se ha resuelto, `product_type` define qué productos
-   satisfacen literalmente la petición. Actúa **antes** de las fronteras. No es
-   un corte y no ordena: identifica.
-2. **Las doce fronteras** (B2.7). Se cogen los productos que las cumplen.
-3. **El orden por precedencia** (B2.8). Ocho niveles, comparados uno tras otro:
-   si un nivel separa, ya está; si no, se baja al siguiente.
+1. **The exact-match restriction** (B2.6). When the customer asked for a concrete
+   object and it resolved, `product_type` defines which products literally
+   satisfy the request. It acts **before** the boundaries. It is not a cut and it
+   does not order: it identifies.
+2. **The twelve boundaries** (B2.7). The products that meet them are taken.
+3. **The order by precedence** (B2.8). Eight levels, compared one after another:
+   if a level separates, that settles it; if not, the next level is read.
 
-**Aquí no se calcula ningún valor numérico derivado.** La precedencia se asigna
-al criterio, no al producto: ningún producto acumula nada, no hay puntuación, ni
-pesos, ni porcentajes. La clave de orden que construye este módulo es una
-comparación lexicográfica —se leen sus posiciones en secuencia, la primera que
-difiere decide— y no una cantidad que se sume ni se compare como magnitud.
+**No derived numeric value is computed here.** Precedence is assigned to the
+criterion, not to the product: no product accumulates anything, there is no
+score, no weights and no percentages. The ordering key this module builds is a
+lexicographic comparison — its positions are read in sequence and the first one
+that differs decides — and not a quantity to be summed or compared as magnitude.
 """
 
 from __future__ import annotations
@@ -22,354 +22,357 @@ from __future__ import annotations
 from models import ExcludedProduct, Product
 
 # --------------------------------------------------------------------------
-# 1 · Restricción de coincidencia exacta (B2.6)
+# 1 · Exact-match restriction (B2.6)
 # --------------------------------------------------------------------------
 
 
-def restringir_por_coincidencia_exacta(
-    productos: list[Product], product_type: str | None
+def restrict_to_exact_match(
+    products: list[Product], product_type: str | None
 ) -> list[Product]:
-    """El conjunto de los productos que son el objeto pedido.
+    """The set of products that are the requested object.
 
-    Un `paring_knife` no es un cuchillo de chef peor: es otro objeto. Por eso no
-    entra en el conjunto ni aparece después en `excluded`.
+    A `paring_knife` is not a worse chef's knife: it is another object. That is
+    why it does not enter the set and does not show up in `excluded` either.
     """
     if not product_type:
-        return list(productos)
-    return [producto for producto in productos if producto.product_type == product_type]
+        return list(products)
+    return [product for product in products if product.product_type == product_type]
 
 
 # --------------------------------------------------------------------------
-# 2 · Las doce fronteras (B2.7)
+# 2 · The twelve boundaries (B2.7)
 # --------------------------------------------------------------------------
 
-BANDA_DE_TARGET_PRICE = 0.20
+TARGET_PRICE_BAND = 0.20
 
 
-def _cumple_el_precio(producto: Product, criterios: dict) -> bool:
-    if producto.price is None:
-        return not any(
-            clave in criterios for clave in ("max_price", "min_price", "target_price")
-        )
-    if "max_price" in criterios and producto.price > criterios["max_price"]:
+def _price_qualifies(product: Product, criteria: dict) -> bool:
+    if product.price is None:
+        return not any(key in criteria for key in ("max_price", "min_price", "target_price"))
+    if "max_price" in criteria and product.price > criteria["max_price"]:
         return False
-    if "min_price" in criterios and producto.price < criterios["min_price"]:
+    if "min_price" in criteria and product.price < criteria["min_price"]:
         return False
-    if "target_price" in criterios:
-        centro = criterios["target_price"]
+    if "target_price" in criteria:
+        centre = criteria["target_price"]
         if not (
-            centro * (1 - BANDA_DE_TARGET_PRICE)
-            <= producto.price
-            <= centro * (1 + BANDA_DE_TARGET_PRICE)
+            centre * (1 - TARGET_PRICE_BAND) <= product.price <= centre * (1 + TARGET_PRICE_BAND)
         ):
             return False
     return True
 
 
-def coger_lo_que_cumple(
-    productos: list[Product],
-    criterios: dict,
-    exclusivos_de_genero: set[str] | None = None,
-    exigir_regalo_autonomo: bool = True,
+def take_what_qualifies(
+    products: list[Product],
+    criteria: dict,
+    gender_specific_types: set[str] | None = None,
+    require_standalone_gift: bool = True,
 ) -> list[Product]:
-    """Los productos que cumplen las doce fronteras.
+    """The products that meet the twelve boundaries.
 
-    Dos son invariantes del servicio y no dependen de lo que diga el cliente:
-    `in_stock` y `is_standalone_gift`. Las otras diez solo actúan si el cliente
-    las ha declarado.
+    Two are invariants of the service and do not depend on what the customer
+    says: `in_stock` and `is_standalone_gift`. The other ten act only when the
+    customer has declared them.
 
-    `is_standalone_gift` corta **al recomendar**, y por eso lo hace por defecto.
-    **No corta con `relation=pairs_with`**, que es la vía por la que un accesorio
-    o un recambio llegan legítimamente como complemento: ahí un producto que no
-    se sostiene solo como regalo es exactamente lo que se está buscando.
-    `in_stock` no tiene excepción y corta en todo el servicio.
+    `stocking_filler: true` **switches on the budget-filling mechanic**: only the
+    marked products are taken. Absent and `false` do not cut — they are three
+    distinct states.
+
+    `is_standalone_gift` cuts **when recommending**, which is why it does so by
+    default. It **does not cut with `relation=pairs_with`**, the path by which an
+    accessory or a refill legitimately arrives as a complement: there, a product
+    that does not stand on its own as a gift is exactly what is being looked for.
+    `in_stock` has no exception and cuts everywhere in the service.
     """
-    exclusivos_de_genero = exclusivos_de_genero or set()
-    dentro: list[Product] = []
+    gender_specific_types = gender_specific_types or set()
+    inside: list[Product] = []
 
-    for producto in productos:
-        if not producto.in_stock:
+    for product in products:
+        if not product.in_stock:
             continue
-        if exigir_regalo_autonomo and not producto.is_standalone_gift:
+        if require_standalone_gift and not product.is_standalone_gift:
             continue
-        if not _cumple_el_precio(producto, criterios):
+        if not _price_qualifies(product, criteria):
             continue
-        if "max_shipping_days" in criterios:
-            if producto.shipping_days is None:
+        if "max_shipping_days" in criteria:
+            if product.shipping_days is None:
                 continue
-            if producto.shipping_days > criterios["max_shipping_days"]:
+            if product.shipping_days > criteria["max_shipping_days"]:
                 continue
-        if criterios.get("gift_wrap_required") is True and producto.gift_wrap is not True:
+        if criteria.get("gift_wrap_required") is True and product.gift_wrap is not True:
             continue
-        for campo in ("brand", "color", "material"):
-            if campo in criterios and getattr(producto, campo) != criterios[campo]:
+        for field in ("brand", "color", "material"):
+            if field in criteria and getattr(product, field) != criteria[field]:
                 break
         else:
-            if criterios.get("recipient") == "kids":
-                if "kids" not in producto.recipient:
-                    continue
-            if "gender_specific" in criterios:
-                pedido = criterios["gender_specific"]
-                if producto.product_type in exclusivos_de_genero:
-                    if pedido not in producto.recipient:
+            if criteria.get("stocking_filler") is True and not product.stocking_filler:
+                continue
+            if criteria.get("recipient") == "kids" and "kids" not in product.recipient:
+                continue
+            if "gender_specific" in criteria:
+                requested = criteria["gender_specific"]
+                if product.product_type in gender_specific_types:
+                    if requested not in product.recipient:
                         continue
-            dentro.append(producto)
+            inside.append(product)
 
-    return dentro
+    return inside
 
 
 # --------------------------------------------------------------------------
-# 3 · El orden por precedencia (B2.8)
+# 3 · The order by precedence (B2.8)
 # --------------------------------------------------------------------------
 
-ORDEN_DE_GIFT_RISK = {"low": 0, "taste_dependent": 1, "high_commitment": 2}
-ORDEN_DE_DESCRIPTION_QUALITY = {"ok": 0, "poor": 1}
+GIFT_RISK_ORDER = {"low": 0, "taste_dependent": 1, "high_commitment": 2}
+DESCRIPTION_QUALITY_ORDER = {"ok": 0, "poor": 1}
 
 
-def _coincide(valores_del_producto: list[str], pedido) -> bool:
-    """Hay coincidencia cuando hay intersección.
+def _matches(product_values: list[str], requested) -> bool:
+    """There is a match when there is an intersection.
 
-    Coincidir con dos valores en vez de con uno no adelanta a nadie: los valores
-    de la consulta son alternativas pertinentes, no puntos acumulables.
+    Matching two values instead of one puts nobody ahead: the values of the query
+    are pertinent alternatives, not accumulable points.
     """
-    if pedido is None:
+    if requested is None:
         return False
-    pedidos = pedido if isinstance(pedido, (list, tuple, set)) else [pedido]
-    return bool(set(valores_del_producto) & set(pedidos))
+    requested_values = requested if isinstance(requested, (list, tuple, set)) else [requested]
+    return bool(set(product_values) & set(requested_values))
 
 
-def _nivel_uno(producto: Product, criterios: dict) -> tuple[int, int]:
-    """`functional_family` + `use_case`, con la precedencia propia de `universal`.
+def _level_one(product: Product, criteria: dict) -> tuple[int, int]:
+    """`functional_family` + `use_case`, with the own precedence of `universal`.
 
-    El nivel se resuelve primero por cuántas de sus dos dimensiones satisface el
-    producto. `universal` desempata **dentro de un mismo recuento**, nunca por
-    encima de él.
+    The level is settled first by how many of its two dimensions the product
+    satisfies. `universal` breaks ties **within the same count**, never above it.
     """
-    familia_pedida = criterios.get("functional_family")
-    situacion_pedida = criterios.get("use_case")
+    requested_family = criteria.get("functional_family")
+    requested_situation = criteria.get("use_case")
 
-    dimensiones_satisfechas = 0
-    if familia_pedida and _coincide(producto.functional_family, familia_pedida):
-        dimensiones_satisfechas += 1
-    if situacion_pedida and _coincide(producto.use_case, situacion_pedida):
-        dimensiones_satisfechas += 1
+    satisfied_dimensions = 0
+    if requested_family and _matches(product.functional_family, requested_family):
+        satisfied_dimensions += 1
+    if requested_situation and _matches(product.use_case, requested_situation):
+        satisfied_dimensions += 1
 
-    if situacion_pedida:
-        if _coincide(producto.use_case, situacion_pedida):
-            lugar_de_universal = 0
-        elif "universal" in producto.use_case:
-            lugar_de_universal = 1
+    if requested_situation:
+        if _matches(product.use_case, requested_situation):
+            universal_rank = 0
+        elif "universal" in product.use_case:
+            universal_rank = 1
         else:
-            lugar_de_universal = 2
+            universal_rank = 2
     else:
-        lugar_de_universal = 0 if "universal" in producto.use_case else 1
+        universal_rank = 0 if "universal" in product.use_case else 1
 
-    return (-dimensiones_satisfechas, lugar_de_universal)
+    return (-satisfied_dimensions, universal_rank)
 
 
-def _nivel_seis(producto: Product) -> tuple[int, float, int, int]:
-    """`rating` + `reviews_count`, en cascada y nunca combinados en una fórmula.
+def _level_six(product: Product) -> tuple[int, float, int, int]:
+    """`rating` + `reviews_count`, in cascade and never combined in a formula.
 
-    Conocido antes que desconocido; entre conocidos, descendente. `null` no se
-    sustituye por cero, no se compara como cero y no se escribe como cero: lo que
-    se compara es si el dato existe.
+    Known before unknown; among known values, descending. `null` is not replaced
+    by zero, not compared as zero and not written as zero: what is compared is
+    whether the datum exists.
     """
-    nota_conocida = 0 if producto.rating is not None else 1
-    nota = -producto.rating if producto.rating is not None else 0.0
-    resenas_conocidas = 0 if producto.reviews_count is not None else 1
-    resenas = -producto.reviews_count if producto.reviews_count is not None else 0
-    return (nota_conocida, nota, resenas_conocidas, resenas)
+    rating_known = 0 if product.rating is not None else 1
+    rating_value = -product.rating if product.rating is not None else 0.0
+    reviews_known = 0 if product.reviews_count is not None else 1
+    reviews_value = -product.reviews_count if product.reviews_count is not None else 0
+    return (rating_known, rating_value, reviews_known, reviews_value)
 
 
-def clave_de_precedencia(
-    producto: Product, criterios: dict, description_quality: str = "ok"
+def precedence_key(
+    product: Product, criteria: dict, description_quality: str = "ok"
 ) -> tuple:
-    """La posición del producto en la cadena, nivel a nivel.
+    """The position of the product along the chain, level by level.
 
-    Es una clave de comparación, no una nota: cada posición corresponde a un
-    nivel de B2.8 y se lee en secuencia. La primera que difiere decide, y las
-    siguientes no la pueden compensar.
+    It is a comparison key, not a score: each position corresponds to a level of
+    B2.8 and is read in sequence. The first one that differs decides, and the
+    following ones cannot compensate for it.
     """
-    nivel_1 = _nivel_uno(producto, criterios)
+    level_1 = _level_one(product, criteria)
+    level_2 = 0 if _matches(product.occasion, criteria.get("occasion")) else 1
 
-    nivel_2 = 0 if _coincide(producto.occasion, criterios.get("occasion")) else 1
+    shelf_matches = 0
+    if criteria.get("category") and product.category == criteria["category"]:
+        shelf_matches += 1
+    if criteria.get("subcategory") and product.subcategory == criteria["subcategory"]:
+        shelf_matches += 1
+    level_3 = -shelf_matches
 
-    coincidencias_de_estanteria = 0
-    if criterios.get("category") and producto.category == criterios["category"]:
-        coincidencias_de_estanteria += 1
-    if criterios.get("subcategory") and producto.subcategory == criterios["subcategory"]:
-        coincidencias_de_estanteria += 1
-    nivel_3 = -coincidencias_de_estanteria
+    requested_recipient = criteria.get("recipient")
+    level_4 = 0 if (requested_recipient and requested_recipient in product.recipient) else 1
 
-    pedido = criterios.get("recipient")
-    nivel_4 = 0 if (pedido and pedido in producto.recipient) else 1
+    requested_relationship = criteria.get("relationship")
+    level_5 = (
+        0
+        if (requested_relationship and requested_relationship in product.suitable_relationships)
+        else 1
+    )
 
-    relacion = criterios.get("relationship")
-    nivel_5 = 0 if (relacion and relacion in producto.suitable_relationships) else 1
+    level_6 = _level_six(product)
 
-    nivel_6 = _nivel_seis(producto)
-
-    if criterios.get("buyer_knows_recipient") is True:
-        nivel_7 = 0  # el nivel se omite y la comparación continúa en el siguiente
+    if criteria.get("buyer_knows_recipient") is True:
+        level_7 = 0  # the level is skipped and the comparison continues below
     else:
-        nivel_7 = ORDEN_DE_GIFT_RISK.get(producto.gift_risk, 0)
+        level_7 = GIFT_RISK_ORDER.get(product.gift_risk, 0)
 
-    nivel_8 = ORDEN_DE_DESCRIPTION_QUALITY.get(description_quality, 0)
+    level_8 = DESCRIPTION_QUALITY_ORDER.get(description_quality, 0)
 
     return (
-        nivel_1,
-        nivel_2,
-        nivel_3,
-        nivel_4,
-        nivel_5,
-        nivel_6,
-        nivel_7,
-        nivel_8,
-        producto.product_id,
+        level_1,
+        level_2,
+        level_3,
+        level_4,
+        level_5,
+        level_6,
+        level_7,
+        level_8,
+        product.product_id,
     )
 
 
-def ordenar_por_precedencia(
-    productos: list[Product],
-    criterios: dict,
-    calidad_por_producto: dict[str, str] | None = None,
+def order_by_precedence(
+    products: list[Product],
+    criteria: dict,
+    quality_by_product: dict[str, str] | None = None,
 ) -> list[Product]:
-    """Ordena el conjunto válido recorriendo la cadena de arriba abajo.
+    """Order the valid set by walking the chain from top to bottom.
 
-    Un empate que sobrevive a los ocho niveles es irrelevante para la
-    recomendación: se estabiliza con `product_id` para que la salida sea
-    reproducible, y eso es todo lo que significa. Nunca con el precio.
+    A tie that survives the eight levels is irrelevant to the recommendation: it
+    is stabilised with `product_id` so the output is reproducible, and that is
+    all it means. Never with the price.
     """
-    calidad_por_producto = calidad_por_producto or {}
+    quality_by_product = quality_by_product or {}
     return sorted(
-        productos,
-        key=lambda producto: clave_de_precedencia(
-            producto, criterios, calidad_por_producto.get(producto.product_id, "ok")
+        products,
+        key=lambda product: precedence_key(
+            product, criteria, quality_by_product.get(product.product_id, "ok")
         ),
     )
 
 
 # --------------------------------------------------------------------------
-# El canal `excluded` (B1.6)
+# The `excluded` channel (B1.6)
 # --------------------------------------------------------------------------
 
-TOPE_DE_EXCLUDED = 2
+EXCLUDED_CAP = 2
 
 
-def por_encima_del_presupuesto(
-    productos: list[Product],
-    criterios: dict,
-    exclusivos_de_genero: set[str] | None = None,
-    calidad_por_producto: dict[str, str] | None = None,
+def above_budget(
+    products: list[Product],
+    criteria: dict,
+    gender_specific_types: set[str] | None = None,
+    quality_by_product: dict[str, str] | None = None,
 ) -> list[ExcludedProduct]:
-    """Hasta dos candidatos relevantes que la frontera de precio dejó fuera.
+    """Up to two relevant candidates the price boundary left out.
 
-    Se eligen **por el orden de precedencia, no por ser los más baratos**: elegir
-    por precio produce respuestas absurdas. Y cumplen todo lo demás — solo el
-    precio les impide entrar.
+    They are chosen **by the order of precedence, not by being the cheapest**:
+    choosing by price produces absurd answers. And they meet everything else —
+    only the price keeps them out.
     """
-    if "max_price" not in criterios:
+    if "max_price" not in criteria:
         return []
 
-    sin_precio = {clave: valor for clave, valor in criterios.items() if clave != "max_price"}
-    candidatos = [
-        producto
-        for producto in coger_lo_que_cumple(productos, sin_precio, exclusivos_de_genero)
-        if producto.price is not None and producto.price > criterios["max_price"]
+    without_price = {key: value for key, value in criteria.items() if key != "max_price"}
+    candidates = [
+        product
+        for product in take_what_qualifies(products, without_price, gender_specific_types)
+        if product.price is not None and product.price > criteria["max_price"]
     ]
-    ordenados = ordenar_por_precedencia(candidatos, criterios, calidad_por_producto)
+    ordered = order_by_precedence(candidates, criteria, quality_by_product)
 
     return [
         ExcludedProduct(
-            product_id=producto.product_id,
-            name=producto.name,
-            price=producto.price,
+            product_id=product.product_id,
+            name=product.name,
+            price=product.price,
             exclusion_reason="over_budget",
-            actual=producto.price,
-            required=criterios["max_price"],
+            actual=product.price,
+            required=criteria["max_price"],
         )
-        for producto in ordenados[:TOPE_DE_EXCLUDED]
+        for product in ordered[:EXCLUDED_CAP]
     ]
 
 
 # --------------------------------------------------------------------------
-# La lógica de relacionados (B0)
+# The related-products logic (B0)
 # --------------------------------------------------------------------------
 
-RELACIONES = ("alternative_to", "pairs_with")
+RELATIONS = ("alternative_to", "pairs_with")
 
 
-def _niveles_de_alternativa(
-    ancla: Product | None, productos: list[Product], criterios: dict
+def _alternative_levels(
+    anchor: Product | None, products: list[Product], criteria: dict
 ) -> list[list[Product]]:
-    """Los tres niveles, de donde sale cada candidato y en qué orden.
+    """The three levels: where each candidate comes from, and in which order.
 
-    Un candidato de un nivel inferior nunca adelanta a uno de un nivel superior:
-    primero se agota el de arriba y solo después se completa el `limit`.
+    A candidate from a lower level never overtakes one from a higher level: the
+    upper level is exhausted first and only then is the limit filled.
     """
-    if ancla is None:
-        # Sin producto de origen, lo que define la alternativa es la intención
-        # acumulada: un solo nivel, el de los criterios semánticos.
-        return [[p for p in productos]]
+    if anchor is None:
+        # With no source product, what defines the alternative is the accumulated
+        # intention: a single level, the one of the semantic criteria.
+        return [list(products)]
 
-    explicita = [p for p in productos if p.product_id in ancla.alternative_to]
-    ya_vistos = {p.product_id for p in explicita} | {ancla.product_id}
+    explicit = [p for p in products if p.product_id in anchor.alternative_to]
+    already_seen = {p.product_id for p in explicit} | {anchor.product_id}
 
-    mismo_tipo = [
+    same_type = [
         p
-        for p in productos
-        if p.product_type == ancla.product_type and p.product_id not in ya_vistos
+        for p in products
+        if p.product_type == anchor.product_type and p.product_id not in already_seen
     ]
-    ya_vistos |= {p.product_id for p in mismo_tipo}
+    already_seen |= {p.product_id for p in same_type}
 
-    misma_familia = [
+    same_family = [
         p
-        for p in productos
-        if set(p.functional_family) & set(ancla.functional_family)
-        and p.product_id not in ya_vistos
+        for p in products
+        if set(p.functional_family) & set(anchor.functional_family)
+        and p.product_id not in already_seen
     ]
 
-    return [explicita, mismo_tipo, misma_familia]
+    return [explicit, same_type, same_family]
 
 
-def relacionados(
-    productos: list[Product],
-    relacion: str,
-    ancla: Product | None,
-    criterios: dict,
-    limite: int,
-    exclusivos_de_genero: set[str] | None = None,
-    calidad_por_producto: dict[str, str] | None = None,
+def related_products(
+    products: list[Product],
+    relation: str,
+    anchor: Product | None,
+    criteria: dict,
+    limit: int,
+    gender_specific_types: set[str] | None = None,
+    quality_by_product: dict[str, str] | None = None,
 ) -> list[Product]:
-    """Recorre los niveles de la relación aplicando fronteras y precedencia.
+    """Walk the levels of the relation applying boundaries and precedence.
 
-    La regla completa, en una línea: relación → fronteras → precedencia dentro
-    del nivel → siguiente nivel → `product_id`. No se crea ninguna lógica de
-    orden propia para los relacionados: se reutilizan las dos piezas que ya hay.
+    The whole rule in one line: relation, then boundaries, then precedence within
+    the level, then the next level, then `product_id`. No ordering logic of its
+    own is created for related products: the two pieces that already exist are
+    reused.
     """
-    if relacion == "pairs_with":
-        if ancla is None:
+    if relation == "pairs_with":
+        if anchor is None:
             return []
-        niveles = [[p for p in productos if p.product_id in ancla.pairs_with]]
+        levels = [[p for p in products if p.product_id in anchor.pairs_with]]
     else:
-        niveles = _niveles_de_alternativa(ancla, productos, criterios)
+        levels = _alternative_levels(anchor, products, criteria)
 
-    # El complemento no tiene que sostenerse solo como regalo: es la vía por la
-    # que llegan el muestrario de tintas, la piedra de afilar o la funda.
-    exigir_regalo_autonomo = relacion != "pairs_with"
+    # A complement does not have to stand on its own as a gift: it is the path by
+    # which the ink sampler, the sharpening stone or the case arrive.
+    require_standalone_gift = relation != "pairs_with"
 
-    elegidos: list[Product] = []
-    for nivel in niveles:
-        if len(elegidos) >= limite:
+    chosen: list[Product] = []
+    for level in levels:
+        if len(chosen) >= limit:
             break
-        candidatos = [p for p in nivel if ancla is None or p.product_id != ancla.product_id]
-        dentro = coger_lo_que_cumple(
-            candidatos, criterios, exclusivos_de_genero, exigir_regalo_autonomo
+        candidates = [p for p in level if anchor is None or p.product_id != anchor.product_id]
+        inside = take_what_qualifies(
+            candidates, criteria, gender_specific_types, require_standalone_gift
         )
-        ordenados = ordenar_por_precedencia(dentro, criterios, calidad_por_producto)
-        for producto in ordenados:
-            if len(elegidos) >= limite:
+        for product in order_by_precedence(inside, criteria, quality_by_product):
+            if len(chosen) >= limit:
                 break
-            elegidos.append(producto)
+            chosen.append(product)
 
-    return elegidos
+    return chosen

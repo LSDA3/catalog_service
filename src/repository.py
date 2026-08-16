@@ -1,8 +1,8 @@
-"""El protocolo del catálogo.
+"""The catalog protocol.
 
-Es lo que permite que el resto del código no sepa que detrás hay un CSV. Hoy la
-implementación lee tres ficheros y los mantiene en memoria; si mañana el catálogo
-llegara de otro sitio, cambia esta pieza y nada más.
+It is what lets the rest of the code not know there is a CSV behind. Today the
+implementation reads three files and keeps them in memory; if tomorrow the
+catalog came from somewhere else, this piece changes and nothing else does.
 """
 
 from __future__ import annotations
@@ -15,59 +15,59 @@ from models import Product
 
 
 class CatalogRepository(Protocol):
-    """Lo que el servicio necesita saber pedir del catálogo."""
+    """What the service needs to know how to ask of the catalog."""
 
-    def todos(self) -> list[Product]:
-        """Los 150 productos canónicos."""
+    def all_products(self) -> list[Product]:
+        """The 150 canonical products."""
 
-    def por_id(self, product_id: str) -> Product | None:
-        """Un producto por su identificador canónico o por uno absorbido."""
+    def by_id(self, product_id: str) -> Product | None:
+        """A product by its canonical identifier or by an absorbed one."""
 
-    def fuera_del_contrato(self, product_id: str) -> dict:
-        """`description_quality`, `tags`, `stock` y `alt_product_ids` (B4.6)."""
+    def off_contract(self, product_id: str) -> dict:
+        """`description_quality`, `tags`, `stock` and `alt_product_ids` (B4.6)."""
 
-    def tipo_de_relacion(self, origen: str, destino: str) -> str | None:
-        """`equivalent` o `same_function` para un vínculo explícito."""
+    def relation_type_of(self, source: str, target: str) -> str | None:
+        """`equivalent` or `same_function` for an explicit link."""
 
-    def categorias(self) -> list[str]:
-        """Los nombres normalizados de las categorías del catálogo."""
+    def categories(self) -> list[str]:
+        """The normalized names of the catalog categories."""
 
 
-class CatalogoEnMemoria:
-    """La implementación de hoy: los tres ficheros, cargados una vez al arrancar.
+class InMemoryCatalog:
+    """Today's implementation: the three files, loaded once at start-up.
 
-    No hay base de datos y no hace falta: 150 productos caben de sobra en memoria,
-    y cada llamada sigue siendo una función pura de sus parámetros.
+    There is no database and none is needed: 150 products fit in memory with room
+    to spare, and every call remains a pure function of its parameters.
     """
 
     def __init__(
         self,
-        ruta_csv: str | Path,
-        ruta_vocabularios: str | Path,
-        ruta_capa_semantica: str | Path,
+        csv_path: str | Path,
+        vocabularies_path: str | Path,
+        semantic_layer_path: str | Path,
     ) -> None:
-        productos, fuera_del_contrato, tipos_de_relacion = loader.cargar(
-            ruta_csv, ruta_vocabularios, ruta_capa_semantica
+        products, off_contract, relation_types = loader.load(
+            csv_path, vocabularies_path, semantic_layer_path
         )
-        self._productos = productos
-        self._fuera_del_contrato = fuera_del_contrato
-        self._tipos_de_relacion = tipos_de_relacion
-        self._por_id: dict[str, Product] = {p.product_id: p for p in productos}
-        for product_id, datos in fuera_del_contrato.items():
-            for absorbido in datos["alt_product_ids"]:
-                self._por_id[absorbido] = self._por_id[product_id]
+        self._products = products
+        self._off_contract = off_contract
+        self._relation_types = relation_types
+        self._by_id: dict[str, Product] = {p.product_id: p for p in products}
+        for product_id, data in off_contract.items():
+            for absorbed in data["alt_product_ids"]:
+                self._by_id[absorbed] = self._by_id[product_id]
 
-    def todos(self) -> list[Product]:
-        return list(self._productos)
+    def all_products(self) -> list[Product]:
+        return list(self._products)
 
-    def por_id(self, product_id: str) -> Product | None:
-        return self._por_id.get(product_id)
+    def by_id(self, product_id: str) -> Product | None:
+        return self._by_id.get(product_id)
 
-    def fuera_del_contrato(self, product_id: str) -> dict:
-        return self._fuera_del_contrato[product_id]
+    def off_contract(self, product_id: str) -> dict:
+        return self._off_contract[product_id]
 
-    def tipo_de_relacion(self, origen: str, destino: str) -> str | None:
-        return self._tipos_de_relacion.get((origen, destino))
+    def relation_type_of(self, source: str, target: str) -> str | None:
+        return self._relation_types.get((source, target))
 
-    def categorias(self) -> list[str]:
-        return sorted({producto.category for producto in self._productos})
+    def categories(self) -> list[str]:
+        return sorted({product.category for product in self._products})
