@@ -65,7 +65,7 @@ def _price_qualifies(product: Product, criteria: dict) -> bool:
 def take_what_qualifies(
     products: list[Product],
     criteria: dict,
-    gender_specific_types: set[str] | None = None,
+    gender_specific_types: dict[str, str] | None = None,
     require_standalone_gift: bool = True,
 ) -> list[Product]:
     """The products that meet the twelve boundaries.
@@ -84,7 +84,7 @@ def take_what_qualifies(
     that does not stand on its own as a gift is exactly what is being looked for.
     `in_stock` has no exception and cuts everywhere in the service.
     """
-    gender_specific_types = gender_specific_types or set()
+    gender_specific_types = gender_specific_types or {}
     inside: list[Product] = []
 
     for product in products:
@@ -110,12 +110,11 @@ def take_what_qualifies(
             requested = criteria.get("recipient")
             if requested == "kids" and "kids" not in product.recipient:
                 continue
-            if (
-                requested in {"her", "him", "couple"}
-                and product.product_type in gender_specific_types
-                and requested not in product.recipient
-            ):
-                continue
+            if requested in {"her", "him", "couple"} and product.product_type in gender_specific_types:
+                if gender_specific_types[product.product_type] == "male" and requested != "him":
+                    continue
+                if gender_specific_types[product.product_type] == "female" and requested != "her":
+                    continue
             inside.append(product)
 
     return inside
@@ -273,7 +272,7 @@ EXCLUDED_CAP = 2
 def above_budget(
     products: list[Product],
     criteria: dict,
-    gender_specific_types: set[str] | None = None,
+    gender_specific_types: dict[str, str] | None = None,
     quality_by_product: dict[str, str] | None = None,
 ) -> list[ExcludedProduct]:
     """Up to two relevant candidates the price boundary left out.
@@ -377,7 +376,7 @@ def related_products(
     anchor: Product | None,
     criteria: dict,
     limit: int,
-    gender_specific_types: set[str] | None = None,
+    gender_specific_types: dict[str, str] | None = None,
     quality_by_product: dict[str, str] | None = None,
 ) -> list[Product]:
     """Walk the levels of the relation applying boundaries and precedence.
