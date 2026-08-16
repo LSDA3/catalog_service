@@ -845,3 +845,60 @@ product_type:
     definicion: Esterilla de yoga
     aliases:
     - yoga mat
+material:
+  wood:
+    definicion: Cualquier madera
+    cubre:
+    - "Oak, linen shade"
+    - "Steel, oak"
+    - "Beech, aluminium"
+    - Walnut
+    - Solid oak
+    - "Wood, resin"
+    - "VG-10 steel, pakkawood"
+    - "Borosilicate glass, wood"
+    - Olive wood
+    - "Steel, beech"
+    - "Walnut, ceramic"
+    - "Wood, glass"
+    - "MDF, aluminium"
+    - "Walnut veneer, aluminium"
+    - "Glass, wood"
+    - "Wood, steel, ink"
+    - "Card, wood"
+    - Birch ply
+    - "Walnut, maple"
+    - "Leather, wood"
+    - "Resin, walnut box"
+    - "Beech, water-based paint"
+    - "Birch ply, felt"
+    - "Wood, wax, paper"
+    - "Plywood, sisal, plush"
+  ceramic:
+    definicion: Cerámica y gres
+    cubre:
+    - "Ceramic, soy wax"
+    - Stoneware
+    - Ceramic
+    - "Ceramic, cotton rope"
+    - "Terracotta, seed"
+    - "Walnut, ceramic"
+    - "Ceramic, soap"
+    - "PU leather, ceramic"
+color:
+  blue:
+    definicion: Azules, de claro a oscuro
+    cubre:
+    - Blue
+    - Navy
+    - Midnight
+    - Indigo
+  grey:
+    definicion: Grises
+    cubre:
+    - Grey
+    - Charcoal
+    - Slate
+    - Speckled Grey
+    - Graphite
+    - Gunmetal
