@@ -441,7 +441,7 @@ async def get_products_by_category(
             inside, key=lambda p: (p.price is None, -(p.price or 0), p.product_id)
         )
     else:
-        ordered = selection.order_by_precedence(inside, criteria, QUALITY_BY_PRODUCT)
+        ordered = sorted(inside, key=lambda p: (selection._level_six(p), p.product_id))
 
     return GetProductsByCategoryResponse(
         results=ordered[offset : offset + limit], total=len(ordered), offset=offset
