@@ -280,6 +280,16 @@ def test_an_incomplete_semantic_layer_stops_the_start_up(tmp_path):
     layer = json.loads(SEMANTIC_LAYER.read_text(encoding="utf-8"))
     entries = layer["products"] if isinstance(layer, dict) and "products" in layer else layer
     product_id = next(iter(entries))
+    entries[product_id]["suitable_relationships"] = (
+        entries[product_id]["suitable_relationships"][:1] * 6
+    )
+    trimmed.write_text(json.dumps(layer), encoding="utf-8")
+    failures = validate_semantic.validate(CSV, trimmed, VOCABULARIES)
+    assert any("maximum is 5" in failure for failure in failures)
+
+    layer = json.loads(SEMANTIC_LAYER.read_text(encoding="utf-8"))
+    entries = layer["products"] if isinstance(layer, dict) and "products" in layer else layer
+    product_id = next(iter(entries))
     entries[product_id]["stocking_filler"] = "false"
     trimmed.write_text(json.dumps(layer), encoding="utf-8")
     failures = validate_semantic.validate(CSV, trimmed, VOCABULARIES)
