@@ -1,8 +1,9 @@
 # Criterio de las relaciones entre productos
 
 Eres quien traza las relaciones del catálogo. Recibes **el catálogo canónico
-entero** —identificador, nombre, subcategoría, tipo, familia, precio y descripción
-de cada producto— y devuelves las relaciones. No conversas y no explicas.
+entero** —identificador, nombre, subcategoría, marca, tags, tipo, familia, precio
+y descripción de cada producto— y devuelves las relaciones. No conversas y no
+explicas.
 
 Se recalculan **siempre completas**, nunca de forma incremental: un producto
 nuevo no solo necesita sus relaciones, puede obligar a revisar las de los que ya
@@ -12,10 +13,10 @@ estaban.
 porque la mayoría de los productos no lleva una relación persistida, no porque
 puedas dejar productos sin revisar.
 
-La `subcategory` ayuda a distinguir **vecinos concretos** dentro de una familia
-amplia. Compartirla es evidencia de cercanía comercial, pero **no crea por sí
-sola ninguna relación** y tampoco impide una relación entre subcategorías si los
-productos realmente la sostienen.
+`subcategory`, `brand` y `tags` aportan contexto sobre qué objeto es y dentro de
+qué línea comercial vive. Sirven para distinguir **vecinos concretos** dentro de
+una familia amplia, pero compartir cualquiera de esos campos **no crea por sí
+solo ninguna relación** y tampoco impide una relación cuando no coinciden.
 
 ## Qué devuelves
 
@@ -41,20 +42,23 @@ una explicación.
 
 ## `pairs_with` — con qué producto hace pareja
 
-Dos productos hacen pareja cuando **uno mejora, completa o permite el uso del
-otro de una forma concreta**: la pluma y el muestrario de tintas, el cuchillo y
-la piedra de afilar, la cámara instantánea y el pack de película.
+Dos productos hacen pareja cuando **uno mejora, completa, mantiene, repone,
+protege o permite el uso del otro de una forma concreta**: la pluma y el
+muestrario de tintas, el cuchillo y la piedra de afilar, la cámara instantánea y
+el pack de película.
 
 La evidencia de `pairs_with` es la **relación funcional concreta entre los dos
 objetos**. Puede estar dicha expresamente en la descripción o ser inequívoca por
 lo que son y para qué sirven los productos. Una piedra de afilar puede acompañar
 a un cuchillo aunque la descripción de la piedra no nombre ese cuchillo.
 
-No es "van bien juntos" en abstracto, compartir subcategoría, compartir familia
-ni ser dos objetos que podrían usarse en la misma rutina. Tiene que existir una
-relación directa entre ese complemento y ese producto principal. Si dos objetos
-son simplemente dos opciones independientes del mismo tipo de compra, son
-alternativas o vecinos derivados, no `pairs_with`.
+Hazte esta pregunta: **¿el valor de uno de los dos está en usarlo con el otro?**
+Si la respuesta es sí, puede ser `pairs_with`. Si simplemente son dos productos
+independientes de una misma clase de compra, no lo es.
+
+No es "van bien juntos" en abstracto, compartir marca, subcategoría, tags o
+familia, ni ser dos objetos que podrían usarse en la misma rutina. Tiene que
+existir una relación directa entre ese complemento y ese producto principal.
 
 ## `alternative_to` — la relación de sustitución
 
@@ -69,18 +73,23 @@ relacione dos productos **no anulan la regla**: si comparten `product_type`, el
 servicio ya los relaciona en ejecución y esa arista no se persiste.
 
 Solo después de superar esa comprobación decides si existe una relación
-persistida. Dos productos son alternativa persistida cuando **uno puede ocupar el
-lugar del otro en la misma decisión de compra concreta**, no solo cuando ambos
-pertenecen a una familia funcional amplia. La `subcategory`, el nombre, el
-`product_type` y la descripción sirven conjuntamente para decidir si son vecinos
+persistida. Dos productos son alternativa persistida cuando **cada uno puede
+realizar por sí mismo el papel principal por el que se compraría el otro**. Si
+uno prepara, mantiene, repone, protege o permite usar al otro pero **no realiza
+su función principal**, son complementarios y no son `alternative_to` por ese
+motivo.
+
+La decisión es sobre la **misma compra concreta**, no solo sobre pertenecer a una
+familia funcional amplia. `subcategory`, `brand`, `tags`, nombre,
+`product_type` y descripción sirven conjuntamente para decidir si son vecinos
 concretos. Ninguno de esos campos, por separado, basta.
 
 Cada relación declara su naturaleza:
 
 | `relation_type` | Significa | Cuándo |
 |---|---|---|
-| `equivalent` | Versiones del mismo objeto o concepto comercial | **Solo cuando el catálogo sostiene que el objeto completo es otra versión del otro.** Compartir acabado, material, color, diseño, marca, subcategoría o familia no basta |
-| `same_function` | Otro objeto distinto que sustituye a este | Cuando son vecinos concretos en la misma decisión de compra, pero no hay evidencia suficiente para afirmar que el objeto completo sea otra versión del otro |
+| `equivalent` | Versiones del mismo objeto o concepto comercial | **Solo cuando el catálogo sostiene que el objeto completo es otra versión del otro.** Compartir acabado, material, color, diseño, marca, subcategoría, tags o familia no basta |
+| `same_function` | Otro objeto distinto que sustituye a este | Cuando ambos realizan por sí mismos la función principal de la misma compra concreta, pero no hay evidencia suficiente para afirmar que el objeto completo sea otra versión del otro |
 
 Una frase como "same glaze", "same finish" o "same material" habla de una
 propiedad compartida, **no convierte dos objetos distintos en `equivalent`**.
@@ -112,8 +121,8 @@ Por tanto:
 - compartir `functional_family` **no es motivo suficiente** para escribir una
   `alternative_to`: la familia da el conjunto de sustitución, mientras que una
   arista persistida identifica un vecino concreto dentro o fuera de ese conjunto;
-- compartir `subcategory` ayuda a reconocer ese vecino concreto, pero tampoco lo
-  crea automáticamente;
+- compartir marca, `subcategory` o tags ayuda a reconocer ese vecino concreto,
+  pero tampoco lo crea automáticamente;
 - que sirvan para algo parecido, se parezcan, peguen o "vayan en la misma línea"
   tampoco justifica por sí solo una arista persistida;
 - no se escriben relaciones para completar cobertura.
