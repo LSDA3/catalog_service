@@ -1609,3 +1609,967 @@ The probabilistic part of catalog construction therefore happens at a moment whe
 By the time a customer is waiting for an answer, that uncertainty has already been converted into validated application data.
 
 That is the central reason for the lifecycle split.
+
+---
+
+## Data model and semantic layer
+
+The Catalog Service does not replace the source catalog with an AI-generated version of it.
+
+Instead, it maintains a strict distinction between three forms of product information:
+
+```text
+SOURCE DATA
+facts supplied by the store
+        │
+        ▼
+CANONICAL DATA
+the same facts after deterministic normalization
+        │
+        +
+        │
+SEMANTIC DATA
+controlled classifications derived during construction
+        │
+        ▼
+RUNTIME PRODUCT
+canonical facts + validated semantic meaning
+```
+
+This separation is essential.
+
+A price, brand or shipping time is a fact supplied by the source system. A `functional_family` or `gift_risk` is a derived interpretation used by the discovery system.
+
+Those two kinds of information should not have the same provenance, should not be generated in the same way and should not be silently substituted for one another.
+
+The runtime `Product` therefore represents a **join between canonical source facts and validated semantic fields**, not a rewritten copy of the original CSV.
+
+---
+
+### The source catalog
+
+The original catalog contains **152 rows and 17 columns**:
+
+| Source field | Meaning |
+|---|---|
+| `product_id` | Identifier supplied by the catalog |
+| `name` | Customer-facing product name |
+| `category` | Commercial category |
+| `subcategory` | Commercial subcategory |
+| `brand` | Product brand |
+| `price_eur` | Price expressed in euros |
+| `stock` | Available stock quantity |
+| `rating` | Product rating when present |
+| `reviews_count` | Number of reviews when present |
+| `recipient` | Commercial recipient label supplied by the source |
+| `occasion` | Occasions associated with the product |
+| `tags` | Source tags |
+| `color` | Product color when present |
+| `material` | Product material when present |
+| `gift_wrap` | Whether gift wrapping is available |
+| `shipping_days` | Delivery time |
+| `description` | Product description |
+
+The file itself is not edited to make it easier for the application.
+
+This is deliberate.
+
+If duplicate rows were manually deleted, inconsistent categories manually renamed or missing information silently filled inside the CSV, the integration would no longer demonstrate how the real source is handled. It would instead hide that work inside a curated input file.
+
+The source remains intact and the application absorbs its irregularities deterministically.
+
+---
+
+### From source rows to canonical products
+
+Canonicalization changes **representation and identity**, not product meaning.
+
+The current source contains 152 rows but resolves to 150 canonical products because two pairs of rows describe the same underlying products under different identifiers.
+
+The canonical representation introduces or derives several pieces of information needed by the service:
+
+| Canonical field | Origin / purpose |
+|---|---|
+| `product_id` | Canonical identifier selected deterministically |
+| `alt_product_ids` | Absorbed identifiers that still resolve to the canonical product |
+| `secondary_categories` | Additional normalized categories carried by absorbed duplicates |
+| `price` | Normalized representation of `price_eur` |
+| `stock` | Normalized quantity where the source provides one |
+| `in_stock` | Availability derived from the stock representation |
+| `recipient` | Source recipient information after the deterministic `anyone` expansion |
+| `description_quality` | Whether the description contains enough information to support a recommendation reason |
+
+The rest of the factual catalog fields are preserved in canonical form.
+
+No semantic classification is needed to decide that two supported price representations mean the same numeric value, that two duplicate rows refer to one product or that an absorbed identifier should still resolve.
+
+Those are integration rules.
+
+---
+
+### Canonical identity
+
+Duplicate handling is not merely cosmetic.
+
+If two rows represent the same real object, the service needs **one product identity** for:
+
+- discovery;
+- details;
+- relations;
+- semantic classification;
+- exclusions;
+- API responses.
+
+The canonical `product_id` is selected deterministically. The other identifier is retained in `alt_product_ids`.
+
+This means an old or alternate identifier is not treated as an unknown product.
+
+```text
+alternate identifier
+        ↓
+alt_product_ids
+        ↓
+canonical product_id
+        ↓
+same runtime Product
+```
+
+Semantic relationships are also built only between canonical identifiers.
+
+An `alt_product_id` is an identity alias, not another semantic node.
+
+---
+
+### Missing data remains missing
+
+The canonical model does not manufacture certainty.
+
+A missing value is preserved as a missing value whenever the source does not justify something stronger.
+
+For example:
+
+```text
+missing rating
+      ≠
+rating 0
+
+missing reviews_count
+      ≠
+0 reviews
+
+missing price
+      ≠
+€0
+```
+
+This distinction matters because those values later participate in selection or ordering.
+
+Turning a missing rating into zero would not merely be a display decision: it would create a new product fact and could change where that product appears.
+
+The service therefore reasons explicitly about whether information exists instead of replacing unknown information with convenient defaults.
+
+---
+
+### `recipient` is normalized as commercial metadata, not treated as a property of the object
+
+The source catalog contains values such as `him`, `her`, `anyone`, `couple` and `kids`.
+
+Those labels are useful, but they cannot automatically be interpreted as physical restrictions of a product.
+
+A keyboard labelled `him`, for example, is not thereby a male-only object.
+
+The canonicalization layer therefore preserves the original recipient value but adds `anyone` when the object itself is not genuinely gender-specific and is not restricted to children.
+
+```text
+source:
+recipient = ["him"]
+
+product is not genuinely gender-specific
+        ↓
+
+canonical:
+recipient = ["him", "anyone"]
+```
+
+Gender-specific exceptions are not guessed from the product name. They are explicitly declared at `product_type` level in the controlled vocabulary.
+
+This allows the system to use recipient information without reproducing the source catalog's commercial labeling as an artificial recommendation boundary.
+
+---
+
+## The semantic layer
+
+The canonical catalog still describes **what the products are factually**.
+
+It does not yet fully describe **how those products participate in gift discovery**.
+
+That second responsibility belongs to `data/semantic_layer.json`.
+
+The current artifact declares:
+
+```text
+vocabulary_version = 4
+```
+
+and contains one semantic entry for every canonical product.
+
+Each product entry contains **nine derived fields**:
+
+| Semantic field | Purpose |
+|---|---|
+| `product_type` | What concrete object the product is |
+| `functional_family` | What work or function the product performs |
+| `use_case` | In what situation or activity it is used |
+| `gift_risk` | How much knowledge of the recipient is needed to choose it confidently |
+| `suitable_relationships` | In which buyer-recipient relationships the gift is suitable |
+| `is_standalone_gift` | Whether it can function as the main gift by itself |
+| `stocking_filler` | Whether it can serve as a small standalone addition to use remaining budget |
+| `pairs_with` | Explicit complementary product relationships |
+| `alternative_to` | Explicit substitution relationships |
+
+These fields do not all answer the same question.
+
+That separation is deliberate.
+
+---
+
+### `product_type`: what object is it?
+
+`product_type` represents the **concrete kind of object**.
+
+Examples include concepts such as:
+
+```text
+chef_knife
+notebook
+board_game
+backpack
+fountain_pen
+```
+
+Its purpose is different from category, function or use case.
+
+A commercial category answers where the store shelves something.
+
+A `functional_family` answers what kind of work it performs.
+
+A `use_case` answers when or for what activity it is useful.
+
+`product_type` answers:
+
+> What is the object itself?
+
+This distinction allows exact object requests to remain exact.
+
+If the customer asks specifically for a chef's knife, a paring knife is not merely a lower-scoring chef's knife. It is another object.
+
+The discovery layer can therefore distinguish:
+
+```text
+"I need a chef's knife"
+        ↓
+exact object request
+
+from
+
+"I need something for cooking"
+        ↓
+broader discovery intent
+```
+
+---
+
+### Reusing product types instead of fragmenting the vocabulary
+
+The classifier receives the existing `product_type` definitions and aliases before assigning a type.
+
+It must reuse an existing type whenever that type already represents the same object.
+
+For example, if `chef_knife` already exists, a product described as a “cooking knife” must not cause a second concept such as `cooking_knife` to be created merely because the wording differs.
+
+Otherwise the same object class would fragment:
+
+```text
+chef_knife
+cooking_knife
+kitchen_chef_knife
+...
+```
+
+and an exact search would return only whichever fragment happened to match the customer's wording.
+
+A new `product_type` is therefore created only when the inventory introduces a genuinely new object concept.
+
+---
+
+### `product_type` is controlled, but not a closed enum
+
+This field is deliberately different from the other controlled semantic vocabularies.
+
+The current vocabulary contains a large number of concrete product types and their aliases. New inventory can legitimately introduce another type.
+
+For that reason, the OpenAPI contract exposes `product_type` as free text rather than publishing the entire inventory-dependent vocabulary as an enum.
+
+The service still resolves it deterministically.
+
+A request can contain either:
+
+```text
+canonical value
+        ↓
+chef_knife
+```
+
+or a known alias such as:
+
+```text
+gyuto
+chef knife
+chef's knife
+        ↓
+chef_knife
+```
+
+If the value cannot be resolved, the service does not guess a nearby type. It can instead report that the criterion was not applied.
+
+---
+
+### `functional_family`: what work does the product perform?
+
+`functional_family` describes **function rather than object identity**.
+
+Examples in the controlled vocabulary include:
+
+```text
+food_preparation
+food_serving
+beverage_preparation
+writing_stationery
+desk_workspace
+storage_organisation
+audio
+outdoor_gear
+```
+
+A product may belong to more than one functional family because one object can perform more than one meaningful job.
+
+This field is therefore multivalued.
+
+It also has **no generic fallback value**.
+
+Every product must have at least one real functional family. If the controlled vocabulary cannot describe what an object does, that is considered a vocabulary problem rather than a reason to assign a meaningless catch-all label.
+
+This field is one of the mechanisms that allows the system to move beyond exact object search.
+
+A customer asking for something useful for food preparation does not need to know which specific product type they want.
+
+---
+
+### `use_case`: in what situation is it useful?
+
+`use_case` describes the situation or activity around the product.
+
+The current controlled vocabulary includes concepts such as:
+
+```text
+cooking
+baking
+coffee
+tea
+home_office
+travel
+gardening
+reading
+fitness
+photography
+writing
+```
+
+Like `functional_family`, it is multivalued.
+
+An object may legitimately participate in several situations.
+
+For example, a product may support both:
+
+```text
+writing
+home_office
+```
+
+without either use case being a weaker version of the other.
+
+The system does not count the number of matching values as accumulating relevance points. Multiple query values are alternatives within the same semantic dimension, not scores.
+
+---
+
+### `universal` has a specific meaning
+
+`use_case` contains one special value:
+
+`universal`
+
+It is reserved for products whose usefulness is **not tied to a specific situation**.
+
+In the current classification criterion, this is intentionally narrow rather than a fallback for generically useful products.
+
+It does not mean:
+
+> “this product matches every possible use case.”
+
+It means:
+
+> “the product does not depend on a specific use case.”
+
+That difference becomes important in precedence ordering.
+
+When no specific `use_case` is known, `universal` can be useful.
+
+When the customer explicitly says they want something for cooking, a concrete cooking match is stronger than a product that is merely independent of use case.
+
+---
+
+### `gift_risk`: how much do we need to know about the recipient?
+
+`gift_risk` does **not** measure product quality.
+
+It describes how much recipient knowledge is needed to recommend the product confidently.
+
+The controlled values are:
+
+| Value | Meaning |
+|---|---|
+| `low` | Can work without knowing the recipient particularly well |
+| `taste_dependent` | Success depends materially on knowing their taste |
+| `high_commitment` | Requires a stronger prior interest, habit, fit, equipment or commitment |
+
+This distinction lets the system behave differently when the buyer barely knows the recipient versus when they know them well.
+
+A highly rated but taste-dependent product is not automatically a safer gift than a lower-risk alternative.
+
+The field is therefore semantic context for recommendation behaviour, not a score.
+
+---
+
+### `suitable_relationships`: who is it appropriate to give this to?
+
+This field describes suitability across the five controlled relationship contexts:
+
+| Value | Relationship context |
+|---|---|
+| `colleague` | Professional relationship |
+| `acquaintance` | Someone known only loosely |
+| `friend` | Friendship |
+| `family` | Direct family |
+| `partner` | Romantic partner |
+
+A product may contain several values.
+
+Each value is binary: the gift either fits that relationship context or it does not.
+
+There is no hierarchy encoded between them and no implication that a product carrying five values is “five times more suitable” than a product carrying one.
+
+---
+
+### `is_standalone_gift`: can this be the gift itself?
+
+Not every sellable product makes sense as a standalone recommendation.
+
+Some objects exist primarily to support another object:
+
+- refills;
+- accessories;
+- protective items;
+- maintenance products;
+- consumables tied to another product.
+
+`is_standalone_gift` distinguishes those from products that can reasonably carry the main recommendation on their own.
+
+`false` is not a quality judgement.
+
+An accessory may be an excellent product and an excellent complement while still being a poor answer to:
+
+> “What should I buy as the gift?”
+
+This distinction is especially important because the service treats discovery and complement search differently.
+
+A main-gift search normally requires a standalone product.
+
+A `pairs_with` search is precisely where a non-standalone complement can become the correct answer.
+
+---
+
+### `stocking_filler`: can it usefully fill remaining budget?
+
+`stocking_filler` represents a specific commercial role.
+
+It marks a product that is:
+
+- sufficiently small;
+- relatively inexpensive;
+- capable of standing on its own as an additional gift.
+
+Its purpose is not to mark “cheap products” generally.
+
+It supports the post-selection behaviour where a customer has already chosen the main gift but still has meaningful unused budget.
+
+The Product Discovery Agent can request:
+
+```text
+stocking_filler = true
+```
+
+together with the remaining budget and use the service to look for a small additional gift.
+
+Because the field is explicit, this does not require the conversational model to improvise which products “feel small enough” on each request.
+
+---
+
+## Product relationships
+
+The remaining semantic fields describe **relationships between products rather than properties of one product in isolation**.
+
+Those relationships are built separately from the product-owned fields because they require visibility of the complete canonical catalog.
+
+The two persisted relationship families are:
+
+```text
+pairs_with
+alternative_to
+```
+
+Their meanings, direction and storage rules are deliberately different.
+
+---
+
+### `pairs_with`: concrete complements
+
+`pairs_with` represents a direct functional complement.
+
+The relationship exists when one product concretely:
+
+- improves;
+- completes;
+- maintains;
+- replenishes;
+- protects;
+- or enables the use of another.
+
+Examples include relationships such as:
+
+```text
+ink → fountain pen
+film → instant camera
+sharpening stone → knife
+```
+
+The test is stronger than:
+
+> “these products could be used in the same routine.”
+
+The value of one product has to be directly connected to using it with the other.
+
+Sharing:
+
+```text
+brand
+subcategory
+tags
+functional_family
+```
+
+does not by itself create a pairing.
+
+---
+
+### The direction of `pairs_with` carries meaning
+
+In the persisted semantic layer, `pairs_with` is written from the accessory or complement **toward the main product**.
+
+For example:
+
+```text
+ink_set
+    │
+    └── pairs_with → fountain_pen
+```
+
+That direction is semantic content.
+
+It tells the system which object is the complement and which object it complements.
+
+For that reason, the relation is not normalized by sorting identifiers.
+
+At runtime, the loader makes both ends aware of the connection where needed, but the stored representation preserves the meaning of the original direction.
+
+---
+
+### `alternative_to`: explicit substitution
+
+`alternative_to` expresses a different relationship.
+
+Here the two products can substitute for one another in the same concrete purchasing decision.
+
+Unlike `pairs_with`, the relationship is symmetric.
+
+Each explicit relation carries a `relation_type`:
+
+| `relation_type` | Meaning |
+|---|---|
+| `equivalent` | The products are supported by the catalog as versions of the same object or commercial concept |
+| `same_function` | They are different objects that can independently serve the same main purchasing purpose |
+
+`equivalent` is deliberately stronger.
+
+Sharing a material, finish, brand, category, tags or even a `product_type` does not automatically justify it.
+
+The source must support the idea that the complete product is another version of the other product.
+
+When the substitution is valid but that stronger claim is not justified, the relation is `same_function`.
+
+---
+
+### Not every relationship needs to be persisted
+
+The runtime already knows enough to derive some substitution relationships.
+
+If two products share the same `product_type`, the service can derive a `same_function` relationship.
+
+It can also use shared `functional_family` as a broader lower-level alternative set.
+
+Therefore the semantic artifact does not need to store a complete graph connecting every vaguely related item.
+
+Persisted relationships are reserved for information that adds something more specific:
+
+```text
+explicit equivalent relationship
+or
+particularly supported concrete alternative
+or
+direct complement
+```
+
+This prevents the graph from becoming a noisy duplicate of information that already exists elsewhere in the model.
+
+Most products do not need a manually persisted relationship, and that is considered correct.
+
+There is no target relationship count.
+
+---
+
+### Relations exist or do not exist; they are not scored
+
+The relationship layer contains no:
+
+```text
+similarity percentage
+relationship strength
+distance
+confidence score
+```
+
+The decision is categorical.
+
+A relation either satisfies its semantic definition or it does not.
+
+This follows the same principle used elsewhere in the system: the project avoids creating numerical quantities merely to make semantic decisions look precise.
+
+---
+
+## Controlled vocabularies
+
+`data/vocabularies.yaml` is the semantic dictionary shared across construction and runtime.
+
+Version 4 currently defines the controlled domains used by the service, including:
+
+| Vocabulary | Current role |
+|---|---|
+| `use_case` | Situations and activities |
+| `functional_family` | Functional role of the product |
+| `gift_risk` | Knowledge/commitment risk of the gift |
+| `suitable_relationships` | Buyer-recipient relationship suitability |
+| `product_type` | Concrete object identity plus aliases |
+
+The first four are closed vocabularies.
+
+The current contract builds real enum definitions for:
+
+- `UseCase`;
+- `FunctionalFamily`;
+- `GiftRisk`;
+- `SuitableRelationship`.
+
+Those enums are generated from `vocabularies.yaml` rather than copied manually into `models.py`.
+
+The current controlled sets contain:
+
+| Vocabulary | Values |
+|---|---:|
+| `UseCase` | 30 |
+| `FunctionalFamily` | 31 |
+| `GiftRisk` | 3 |
+| `SuitableRelationship` | 5 |
+
+`product_type` remains controlled but open to legitimate inventory growth.
+
+This creates a **single semantic source of truth**.
+
+The classifier sees the vocabulary definitions when assigning fields, the validator checks against those same definitions, and the OpenAPI contract exposes those same controlled values to the agent.
+
+The construction model and the conversational model therefore do not receive two independently maintained interpretations of what concepts such as `food_preparation` or `taste_dependent` mean.
+
+---
+
+## Definitions are part of the contract
+
+A controlled label without its meaning would not be enough.
+
+For example:
+
+```text
+gift_risk = taste_dependent
+```
+
+only helps if both the classifier and the consumer understand what `taste_dependent` means in the same way.
+
+`vocabularies.yaml` therefore contains a `definicion` for each controlled value.
+
+`models.py` builds the enum descriptions from those definitions so they reach the OpenAPI schema read by indigo.ai.
+
+That produces a semantic chain:
+
+```text
+vocabularies.yaml
+        │
+        ├── classification criterion
+        │
+        ├── semantic validation
+        │
+        └── OpenAPI enum descriptions
+```
+
+The system is not relying on the same label accidentally meaning the same thing in three different places.
+
+---
+
+## The runtime `Product` model
+
+After canonical source data and semantic data are joined, the public runtime representation is the Pydantic `Product` model.
+
+It contains **26 fields**:
+
+| Group | Fields |
+|---|---|
+| Identity and content | `product_id`, `name`, `description` |
+| Purchase conditions | `price`, `shipping_days`, `gift_wrap`, `brand`, `color`, `material`, `in_stock`, `is_standalone_gift` |
+| Classification | `category`, `secondary_categories`, `subcategory`, `product_type`, `functional_family`, `use_case`, `occasion`, `recipient`, `suitable_relationships`, `gift_risk`, `rating`, `reviews_count` |
+| Commercial relations | `stocking_filler`, `pairs_with`, `alternative_to` |
+
+This is the single product shape used by the operations that return merchandise.
+
+A product returned during discovery therefore does not arrive as a short search hit that later needs to be enriched through another call.
+
+It already contains the product information the agent is allowed to use.
+
+That is why `get_product_details` is reserved for a customer asking specifically about an identified product, not for repairing incomplete discovery results.
+
+---
+
+## What deliberately does not travel in `Product`
+
+Four runtime fields remain outside the public `Product` contract:
+
+| Internal field | Why it stays internal |
+|---|---|
+| `description_quality` | Its effect has already been applied during precedence ordering |
+| `tags` | Useful during construction/context, but not part of the runtime discovery contract |
+| `stock` | The exact quantity adds no required agent behaviour; availability is exposed through `in_stock` |
+| `alt_product_ids` | Needed for identity resolution, not for customer-facing reasoning |
+
+This is an important contract decision.
+
+The agent receives what it needs to make and explain recommendations, not every field the backend happens to know.
+
+The API is therefore neither:
+
+> “send everything because it exists”
+
+nor:
+
+> “send almost nothing and let the LLM infer the rest.”
+
+It exposes the information that belongs in the product-discovery contract.
+
+---
+
+## Other public shapes
+
+`Product` is not the only shape in the data model.
+
+The API uses specialized forms when a full product would communicate the wrong semantics.
+
+### `ExcludedProduct`
+
+A product in `excluded` is relevant enough to acknowledge but failed a query boundary.
+
+It carries only:
+
+```text
+product_id
+name
+price
+exclusion_reason
+actual
+required
+```
+
+It intentionally does not carry the complete recommendation envelope.
+
+The agent should explain **why it was excluded**, not write a normal recommendation for it.
+
+### `CategorySummary`
+
+Category discovery returns the current state of each category:
+
+```text
+name
+available_count
+price_min
+price_max
+```
+
+A category is part of the store map even when its current available count is zero.
+
+### `NotApplied`
+
+`NotApplied` represents a criterion that arrived in the request but could not safely be applied:
+
+```text
+parameter
+received
+reason
+```
+
+This distinction makes absence observable.
+
+Without it, the agent could not tell whether:
+
+```text
+criterion absent from query_understood
+```
+
+means:
+
+```text
+the customer never said it
+```
+
+or:
+
+```text
+the customer said it, but the service could not resolve it
+```
+
+Those require different customer-facing behaviour.
+
+### `RelatedProduct`
+
+A related result is a normal `Product` plus, where applicable:
+
+```text
+relation_type
+```
+
+`relation_type` is not placed inside the base `Product` because it is not a property of the product itself.
+
+It only has meaning relative to the product from which the related search started.
+
+---
+
+## One response model per operation
+
+The service deliberately does not use a universal response envelope.
+
+Each operation publishes only the metadata that actually has meaning for that operation.
+
+For example:
+
+| Operation | Operation-specific metadata |
+|---|---|
+| `get_categories` | none |
+| `get_products_by_category` | `total`, `offset` |
+| `find_products_by_criteria` | `query_understood`, `excluded`, `not_applied` |
+| `get_related_products` | `relation_type`, `query_understood`, `excluded` |
+| `get_product_details` | none |
+
+`currency` travels at response level rather than being repeated inside every product.
+
+A universal envelope containing every possible field would technically be convenient, but it would make the API less precise for an LLM consumer.
+
+The agent would then have to infer whether a field was absent because:
+
+- it did not apply;
+- it was empty;
+- the operation did not support it;
+- or the backend forgot to populate it.
+
+Separate response models encode those distinctions directly into the contract.
+
+---
+
+## Why the semantic layer exists
+
+The semantic layer is not an attempt to create a richer product database for its own sake.
+
+It exists because the source catalog and the customer describe the same purchase in different languages.
+
+The source catalog naturally says things such as:
+
+```text
+category = Kitchen & Dining
+subcategory = Knives
+price = 149
+shipping_days = 3
+```
+
+The customer naturally says things such as:
+
+```text
+"She loves cooking."
+"I don't know her very well."
+"Something useful for the new house."
+"Do you have something similar?"
+"Could I add something small?"
+```
+
+A direct search over source attributes leaves a large semantic gap between those two representations.
+
+The controlled layer introduces a stable intermediate language:
+
+```text
+customer intent
+        ↓
+functional_family
+use_case
+product_type
+gift_risk
+suitable_relationships
+        ↓
+canonical products
+```
+
+and product-to-product behaviour:
+
+```text
+selected product
+        ↓
+pairs_with
+alternative_to
+        ↓
+complements / alternatives
+```
+
+The LLM is therefore not asked to rediscover the meaning of every product during every conversation.
+
+That work is performed once during controlled construction, converted into explicit data, validated, versioned and then reused deterministically.
+
+The result is a catalog that remains factual at its core while becoming capable of supporting conversational gift discovery.
