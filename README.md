@@ -2573,3 +2573,1202 @@ The LLM is therefore not asked to rediscover the meaning of every product during
 That work is performed once during controlled construction, converted into explicit data, validated, versioned and then reused deterministically.
 
 The result is a catalog that remains factual at its core while becoming capable of supporting conversational gift discovery.
+
+---
+
+## Discovery and selection logic
+
+Product discovery is implemented as a **deterministic selection process**, not as semantic similarity scoring.
+
+The service does not assign each product a relevance percentage and then sort by the largest total.
+
+Instead, `selection.py` separates three different questions:
+
+```text
+1. Did the customer identify a concrete object?
+        ↓
+   exact product_type restriction
+
+2. Which products are actually admissible?
+        ↓
+   selection boundaries
+
+3. Among the admissible products, which should come first?
+        ↓
+   precedence ordering
+```
+
+Those mechanics intentionally do not collapse into one another.
+
+A product can be the wrong object even if it is otherwise attractive.
+
+A product can be the right object but violate a price or delivery boundary.
+
+Two products can both satisfy every boundary while one is still more relevant to the customer's situation.
+
+The implementation represents those as different decisions.
+
+---
+
+### 1. Exact object restriction
+
+`product_type` has a special role in discovery.
+
+When the customer explicitly names a concrete object and that object resolves to a canonical `product_type`, the service first restricts the candidate universe to products of exactly that type.
+
+```text
+all canonical products
+        ↓
+product_type = chef_knife
+        ↓
+only chef_knife products
+```
+
+This happens **before** the normal selection boundaries and before precedence ordering.
+
+It is not itself treated as a boundary and it is not a ranking signal.
+
+It identifies what set of objects actually answers the request.
+
+That distinction prevents a semantically related object from being presented as though it were the object the customer explicitly requested.
+
+For example:
+
+```text
+customer asks for:
+chef_knife
+        ↓
+paring_knife
+```
+
+does not mean:
+
+```text
+"lower-scoring chef's knife"
+```
+
+It means:
+
+```text
+different object
+```
+
+A `paring_knife` therefore does not enter the exact-match universe and is not placed in `excluded` merely because it failed to be a chef's knife.
+
+`excluded` is for products that were relevant members of the applicable universe but failed a selection boundary. It is not a container for unrelated product types.
+
+---
+
+### Alias resolution happens before exact restriction
+
+The customer is not required to know the canonical `product_type`.
+
+The API resolves:
+
+- the canonical value itself;
+- declared aliases from `vocabularies.yaml`.
+
+For example, different supported expressions can resolve to the same canonical object:
+
+```text
+gyuto
+chef knife
+chef's knife
+        ↓
+chef_knife
+```
+
+Once resolved, the canonical value is what appears in `query_understood`.
+
+If a supplied `product_type` cannot be resolved, the service does **not** guess the closest type.
+
+Instead:
+
+- the unresolved criterion is reported in `not_applied`;
+- the remaining valid criteria can still be used for discovery;
+- exact object restriction is not performed because no exact object was established.
+
+This preserves a crucial distinction between:
+
+> “I know which object the customer requested.”
+
+and:
+
+> “I have a guess about what they might have meant.”
+
+---
+
+## 2. Selection boundaries
+
+After the applicable candidate universe has been established, `take_what_qualifies(...)` decides which products are allowed to remain.
+
+The current implementation contains **12 selection boundaries** when the separate price forms are counted individually:
+
+| Boundary | Behaviour |
+|---|---|
+| `in_stock` | Always required |
+| `is_standalone_gift` | Required for normal recommendations |
+| `max_price` | Product price cannot exceed the declared maximum |
+| `min_price` | Product price cannot fall below the declared minimum |
+| `target_price` | Product must fall inside the ±20 % target band |
+| `max_shipping_days` | Product must meet the delivery deadline |
+| `gift_wrap_required` | When `true`, gift wrapping must be available |
+| `brand` | Exact declared brand requirement |
+| `color` | Resolved color requirement |
+| `material` | Resolved material requirement |
+| `stocking_filler` | When `true`, product must be classified as a filler |
+| `recipient` | Hard restriction only in the cases described below |
+
+These boundaries determine **admissibility**, not relative desirability.
+
+Once a product fails an applicable boundary, later precedence levels cannot compensate for that failure.
+
+A highly rated product does not become valid because its rating is strong if it misses the customer's delivery deadline.
+
+---
+
+### Two boundaries are service invariants
+
+Two boundaries do not depend on the customer explicitly requesting them.
+
+#### `in_stock`
+
+Normal discovery never recommends unavailable merchandise.
+
+`in_stock` is therefore always enforced.
+
+There is no conversational preference that can make an unavailable product become a valid discovery result.
+
+A direct `get_product_details` lookup is different because that operation can show the true state of a specifically identified product, including `in_stock = false`.
+
+#### `is_standalone_gift`
+
+Normal recommendation searches also require:
+
+```text
+is_standalone_gift = true
+```
+
+because the result is expected to work as the actual gift.
+
+An accessory, refill or maintenance item that only makes sense together with another object should not become the main result simply because it fits the price and semantic criteria.
+
+There is one deliberate exception:
+
+```text
+relation = pairs_with
+```
+
+When searching for a complement, `is_standalone_gift` is not required.
+
+That is precisely the path where products such as a refill, case or accessory can legitimately be useful.
+
+`in_stock`, by contrast, continues to apply even to complements.
+
+---
+
+## Price semantics
+
+The service supports three different forms of price intent:
+
+```text
+max_price
+min_price
+target_price
+```
+
+They do not mean the same thing.
+
+### `max_price`
+
+A strict upper boundary.
+
+```text
+max_price = 50
+```
+
+means:
+
+```text
+price <= 50
+```
+
+A product above that value does not enter `results`.
+
+### `min_price`
+
+A strict lower boundary.
+
+```text
+min_price = 60
+```
+
+means:
+
+```text
+price >= 60
+```
+
+This supports requests where the customer does not want the result to fall below a particular spend.
+
+### `target_price`
+
+An approximate price is represented as a band rather than as a hidden maximum.
+
+The current band is:
+
+```text
+target_price ± 20 %
+```
+
+For example:
+
+```text
+target_price = 60
+        ↓
+48 <= price <= 72
+```
+
+This is why a product slightly above €60 can be valid for an “around €60” request while it would be invalid for:
+
+```text
+max_price = 60
+```
+
+The distinction survives all the way from the API contract to deterministic selection.
+
+---
+
+### Missing prices are not treated as zero
+
+When any of:
+
+```text
+max_price
+min_price
+target_price
+```
+
+is active, a product whose price is unknown cannot prove that it satisfies the requested price condition.
+
+It therefore does not qualify.
+
+When no price criterion exists, a missing price does not by itself exclude the product.
+
+Again, unknown is not silently converted into zero.
+
+---
+
+## Delivery
+
+`max_shipping_days` is a hard boundary.
+
+If:
+
+```text
+max_shipping_days = 3
+```
+
+then a product must have a known shipping time no greater than three days.
+
+A missing shipping value cannot prove that the deadline will be met and therefore fails the boundary.
+
+This is one of the reasons price and delivery are treated specially in the conversational workflow as required information before the normal discovery search is launched.
+
+---
+
+## Gift wrapping
+
+`gift_wrap_required` is activated only when the customer actually requires gift wrapping.
+
+When:
+
+```text
+gift_wrap_required = true
+```
+
+only products whose `gift_wrap` value is explicitly `true` qualify.
+
+An absent requirement does not imply that the customer prefers products without gift wrapping.
+
+The contract therefore preserves absence as its own state.
+
+---
+
+## Brand, color and material
+
+These attributes can become boundaries when the customer states them.
+
+`brand` is an exact declared requirement.
+
+`color` and `material` support an additional normalization step before selection.
+
+The API first attempts to interpret the value using the controlled definitions in `vocabularies.yaml`.
+
+A broader declared term can expand into the concrete catalog values it covers.
+
+Otherwise, the service attempts a case-insensitive match against actual catalog values.
+
+That allows the service to preserve the customer's level of precision rather than inventing a more specific attribute.
+
+If `find_products_by_criteria` cannot resolve a supplied `color` or `material`:
+
+- that criterion is removed from the applied criteria;
+- it does not appear in `query_understood`;
+- it is reported through `not_applied`;
+- the rest of the query can still execute.
+
+The returned products must therefore never be described as satisfying that unresolved criterion.
+
+---
+
+## `stocking_filler`
+
+`stocking_filler` has intentionally asymmetric behaviour.
+
+```text
+stocking_filler = true
+```
+
+activates the boundary and returns only products classified as suitable fillers.
+
+If it is absent, filler status does not restrict discovery.
+
+This supports a specific post-selection search:
+
+```text
+main gift already settled
+        +
+remaining budget
+        ↓
+stocking_filler = true
+        ↓
+small additional gift
+```
+
+The field therefore does not generally mean “prefer cheaper things”.
+
+It turns on a defined selection mechanic.
+
+---
+
+## Recipient behaviour
+
+`recipient` combines deterministic normalization with two different forms of selection behaviour.
+
+### `kids`
+
+`kids` acts as a hard boundary.
+
+When the customer asks for a child:
+
+```text
+recipient = kids
+```
+
+the product must explicitly contain:
+
+```text
+kids
+```
+
+`anyone` does not satisfy that requirement.
+
+### `her`, `him` and `couple`
+
+Adult recipient labels are treated more cautiously because the source catalog contains commercial recipient metadata that is not necessarily a real restriction of the object.
+
+For ordinary non-gender-specific product types, adult recipient information is therefore primarily used later in precedence ordering.
+
+A hard exclusion happens only when the product's `product_type` is explicitly marked as `gender_specific` in the controlled vocabulary and is incompatible with the requested recipient.
+
+The service does not infer gender specificity from the product name or from the source's original marketing label.
+
+---
+
+## Criteria that order but do not cut
+
+Several pieces of information matter strongly to recommendation relevance but are deliberately **not hard boundaries** in normal discovery.
+
+These include:
+
+- `functional_family`;
+- `use_case`;
+- `occasion`;
+- `category`;
+- `subcategory`;
+- adult recipient compatibility where no genuine gender-specific restriction exists;
+- `relationship`;
+- rating and review information;
+- `gift_risk`;
+- `description_quality`.
+
+This is the core distinction between:
+
+```text
+must satisfy
+```
+
+and:
+
+```text
+should come first
+```
+
+A user saying that the gift is for a housewarming, for example, should strongly influence ordering without necessarily erasing every useful product whose source `occasion` does not explicitly contain `housewarming`.
+
+---
+
+# 3. Precedence ordering
+
+Once invalid products have been removed, the service orders the surviving set using **eight precedence levels**.
+
+This is implemented as a lexicographic comparison.
+
+Conceptually:
+
+```text
+compare level 1
+    │
+    ├─ different → order is decided
+    │
+    └─ tied
+         ↓
+compare level 2
+    │
+    ├─ different → order is decided
+    │
+    └─ tied
+         ↓
+...
+```
+
+A lower-priority level can never compensate for losing at a higher-priority level.
+
+There is no addition.
+
+There are no weights.
+
+There is no final numerical relevance score.
+
+The precedence chain is:
+
+| Level | Criterion |
+|---:|---|
+| 1 | `functional_family` + `use_case`, including `universal` behaviour |
+| 2 | `occasion` |
+| 3 | `category` + `subcategory` |
+| 4 | `recipient` |
+| 5 | `relationship` / `suitable_relationships` |
+| 6 | `rating` → `reviews_count` |
+| 7 | `gift_risk` |
+| 8 | `description_quality` |
+| tie only | `product_id` for deterministic stability |
+
+Each level has its own semantics.
+
+---
+
+## Level 1 — `functional_family` and `use_case`
+
+The first level asks whether the product matches the customer's **functional need and usage situation**.
+
+These are two independent dimensions:
+
+```text
+functional_family
+use_case
+```
+
+A product can therefore satisfy:
+
+- both;
+- one;
+- neither.
+
+The number of dimensions satisfied determines the first part of the comparison.
+
+```text
+matches both
+    before
+matches one
+    before
+matches neither
+```
+
+Matching multiple values inside the **same** dimension does not create extra points.
+
+For example, if the customer's `use_case` contains more than one acceptable value, the product only needs an intersection.
+
+```text
+requested use_case:
+[cooking, baking]
+
+product use_case:
+[cooking, baking]
+
+        =
+one satisfied use_case dimension
+```
+
+It does not receive two accumulated relevance points.
+
+The same rule applies to `functional_family`.
+
+---
+
+### `universal` inside level 1
+
+`universal` has its own precedence behaviour.
+
+When a specific `use_case` exists:
+
+1. a concrete match to that use case comes first;
+2. `universal` can come next within the same broader level;
+3. a product matching neither follows.
+
+But `universal` never allows a product to overtake another product that satisfies more of the two primary dimensions.
+
+For example, a product satisfying both the requested `functional_family` and concrete `use_case` remains ahead of one that matches fewer dimensions but happens to carry `universal`.
+
+When no specific `use_case` is supplied, `universal` acts as the preferred tie-break inside this level rather than pretending to match a nonexistent use case.
+
+---
+
+## Level 2 — occasion
+
+Products whose `occasion` intersects with the requested occasion come before products that do not.
+
+This is precedence, not a hard filter.
+
+A product with no explicit occasion match can still survive if it satisfies all actual boundaries.
+
+---
+
+## Level 3 — category and subcategory
+
+Commercial taxonomy enters after function, use and occasion.
+
+The level counts whether the surviving product matches the requested:
+
+```text
+category
+subcategory
+```
+
+A product matching both comes before one matching only one, which comes before one matching neither.
+
+This is an important architectural choice.
+
+In `find_products_by_criteria`, category information helps order the cross-category discovery set but does not redefine semantic relevance as “whatever happens to be on this shelf”.
+
+By contrast, `get_products_by_category` is a browsing operation and explicitly establishes the category itself as the universe before applying its supported boundaries.
+
+Those are different operations with intentionally different semantics.
+
+---
+
+## Level 4 — recipient
+
+Recipient relevance is then considered.
+
+For an adult recipient, products explicitly suitable for that recipient and products normalized with `anyone` receive the matching position.
+
+The earlier hard boundary has already removed genuinely incompatible gender-specific types where applicable.
+
+For `kids`, the hard selection happened before ordering.
+
+This prevents recipient metadata from becoming a broad exclusion mechanism while still allowing it to affect which valid products appear first.
+
+---
+
+## Level 5 — relationship
+
+If the customer provides the relationship between buyer and recipient, products whose `suitable_relationships` contains that value come first.
+
+Examples include:
+
+```text
+colleague
+acquaintance
+friend
+family
+partner
+```
+
+A mismatch does not remove the product.
+
+This reflects what `suitable_relationships` means in the semantic layer: recommendation suitability, not physical product eligibility.
+
+---
+
+## Level 6 — rating and review count
+
+Commercial evidence enters only after the more meaningful semantic criteria above it.
+
+The comparison is a cascade:
+
+```text
+rating known
+    before
+rating unknown
+```
+
+and, among products with ratings:
+
+```text
+higher rating
+    before
+lower rating
+```
+
+Then:
+
+```text
+reviews_count known
+    before
+reviews_count unknown
+```
+
+and, when known:
+
+```text
+more reviews
+    before
+fewer reviews
+```
+
+Rating and review count are **not combined into a formula**.
+
+A rating of 4.8 with 20 reviews does not generate a synthetic value to compare against 4.6 with 400 reviews.
+
+The declared cascade decides.
+
+Missing values remain missing and are not converted to zero for the comparison.
+
+---
+
+## Level 7 — `gift_risk`
+
+Unless the buyer has explicitly indicated that they know the recipient well, lower gift risk is preferred:
+
+```text
+low
+    ↓
+taste_dependent
+    ↓
+high_commitment
+```
+
+This does not mean `low` products are objectively better.
+
+It means they require less recipient-specific knowledge to recommend safely.
+
+When:
+
+```text
+buyer_knows_recipient = true
+```
+
+this precautionary level is skipped.
+
+All products receive the same position at level 7 and comparison continues to the next level.
+
+Absent and `false` preserve the precaution.
+
+---
+
+## Level 8 — `description_quality`
+
+The final semantic level prefers products whose description is sufficiently informative:
+
+```text
+ok
+    before
+poor
+```
+
+`description_quality` itself does not travel in the public `Product` response.
+
+Its effect has already been consumed by the selection process.
+
+This is a good example of an internal field whose purpose is operational rather than conversational.
+
+---
+
+## Stable ties
+
+If two products remain tied after all eight levels, the service uses:
+
+```text
+product_id
+```
+
+to make the output reproducible.
+
+This tie-break has **no recommendation meaning**.
+
+It exists only so identical inputs produce stable output ordering.
+
+Price is deliberately not used as the final tie-break.
+
+Otherwise products that were semantically identical under the declared criteria would receive an undocumented preference merely because one was cheaper or more expensive.
+
+---
+
+# No numeric product score
+
+The resulting ordering key is technically a sequence of comparable values, but it is not a recommendation score.
+
+The distinction is important.
+
+A numerical scoring system typically behaves like:
+
+```text
+function match × weight
++
+occasion match × weight
++
+rating × weight
++
+...
+=
+score
+```
+
+That allows enough strength in a low-priority dimension to compensate for weakness in a high-priority one.
+
+This service deliberately does not do that.
+
+Its behaviour is:
+
+```text
+first decisive criterion wins
+```
+
+A stronger rating cannot compensate for failing a higher-priority semantic level.
+
+A larger review count cannot compensate for a worse functional match.
+
+A cheap price cannot compensate for being the wrong object.
+
+The ordering therefore remains explainable in terms of the declared decision hierarchy rather than an opaque aggregate number.
+
+---
+
+# `excluded`: preserving relevant failures
+
+Products that fail a boundary are normally removed from `results`.
+
+In some cases, however, simply removing them would destroy information the conversational agent needs.
+
+The current service therefore has an `excluded` channel.
+
+It is deliberately small and does not behave as a second recommendation list.
+
+---
+
+## Over-budget candidates
+
+When `max_price` is present, the service can return up to:
+
+```text
+2
+```
+
+relevant products that satisfy the other applicable boundaries but exceed that maximum.
+
+To construct them, the service:
+
+1. removes only `max_price` from the boundary set;
+2. identifies products that satisfy everything else;
+3. keeps those whose actual price is above the maximum;
+4. orders them using the same normal precedence;
+5. returns at most two.
+
+They are therefore selected because they are **relevant except for budget**, not because they are simply the cheapest products above the boundary.
+
+Each reference carries:
+
+```text
+product_id
+name
+price
+exclusion_reason = over_budget
+actual
+required
+```
+
+For example:
+
+```text
+customer max_price = 50
+Chef's Knife price = 149
+        ↓
+excluded:
+actual = 149
+required = 50
+```
+
+This is the mechanism that allows the agent to say:
+
+> the shop does carry the requested object, but it is outside the stated budget
+
+instead of incorrectly claiming that the product does not exist.
+
+`excluded` is only constructed when there is room after valid `results`; it is not allowed to displace valid products from the requested result limit.
+
+---
+
+## Exact out-of-stock case
+
+There is also a specific exact-object case.
+
+If:
+
+- `product_type` resolved;
+- that exact universe contains one product;
+- no valid result remains;
+- that product is out of stock;
+
+the service can return that product through `excluded` with:
+
+```text
+exclusion_reason = out_of_stock
+```
+
+Again, this preserves the difference between:
+
+```text
+the product does not exist
+```
+
+and:
+
+```text
+the product exists but cannot currently be recommended
+```
+
+---
+
+# `not_applied`: preserving unresolved criteria
+
+`not_applied` solves a different information-loss problem.
+
+It describes **input**, not excluded products.
+
+If the customer supplies a criterion that the service cannot resolve safely, silently dropping it would make the remaining results look more constrained than they really are.
+
+For supported unresolved criteria such as `product_type`, `color` or `material` in `find_products_by_criteria`, the response can therefore say:
+
+```text
+parameter
+received
+reason
+```
+
+while still executing the parts of the request that were understood.
+
+The contract then separates:
+
+```text
+query_understood
+```
+
+from:
+
+```text
+not_applied
+```
+
+The conversational agent can tell exactly which claims it is entitled to make about the results.
+
+---
+
+# `query_understood`
+
+`query_understood` is the normalized representation of the criteria that the service actually understood and applied.
+
+For example, when an alias resolves successfully:
+
+```text
+customer / agent sends:
+product_type = "gyuto"
+
+service resolves:
+product_type = "chef_knife"
+
+query_understood:
+product_type = "chef_knife"
+```
+
+An unresolved criterion reported in `not_applied` is not also presented as though it had been applied successfully.
+
+This gives the conversational layer a machine-readable account of **what the search actually meant to the service**, not merely what was originally sent.
+
+---
+
+# Related-product selection reuses the same mechanics
+
+`get_related_products` does not contain a second recommendation-ranking system.
+
+It reuses:
+
+- the same selection boundaries;
+- the same precedence ordering.
+
+What changes is how the initial candidate universe is constructed.
+
+There are two relation paths:
+
+```text
+pairs_with
+alternative_to
+```
+
+---
+
+## `pairs_with`
+
+A complement search requires a concrete `product_id`.
+
+Without it, the operation returns:
+
+```text
+missing_anchor
+```
+
+The candidate universe is the explicit set in the anchor product's resolved `pairs_with` relationships.
+
+The service then:
+
+```text
+explicit complements
+        ↓
+boundaries
+        ↓
+precedence
+        ↓
+limit
+```
+
+Unlike ordinary discovery, `is_standalone_gift` is not required here because the requested object is specifically a complement.
+
+Everything else, including `in_stock`, continues to apply.
+
+---
+
+## `alternative_to`
+
+Alternative search is broader.
+
+When a concrete anchor product exists, candidates are considered in three ordered levels:
+
+```text
+1. explicit alternative_to
+        ↓
+2. same product_type
+        ↓
+3. shared functional_family
+```
+
+The levels are strict.
+
+A candidate from level 2 cannot overtake a surviving candidate from level 1 because it has a better rating.
+
+A candidate from level 3 cannot overtake one from level 2 because it matches the occasion more closely.
+
+The system exhausts each higher relationship level before using the next one to fill the result limit.
+
+Inside each level, however, the standard boundaries and standard precedence chain apply.
+
+This creates two nested forms of order:
+
+```text
+relationship level
+        ↓
+normal precedence within that level
+```
+
+---
+
+### Alternative search without a `product_id`
+
+`alternative_to` can also operate without a concrete source product when enough of the intended product concept is known.
+
+If `product_type` is available, it anchors the relation concept:
+
+```text
+same requested product_type
+        ↓
+shared functional_family
+```
+
+If no `product_type` exists but `functional_family` does, the family provides the candidate set.
+
+Other meaningful non-boundary criteria can also establish enough intention for the service to evaluate alternatives over the catalog using the normal boundaries and precedence.
+
+A request containing only boundaries such as:
+
+```text
+max_price
+max_shipping_days
+```
+
+does **not** describe what is being substituted.
+
+Without a product or usable concept, `alternative_to` therefore returns:
+
+```text
+missing_anchor
+```
+
+Price alone is not a semantic anchor.
+
+---
+
+### `product_type` means something different inside alternatives
+
+The exact-match restriction used by `find_products_by_criteria` does not propagate blindly into `get_related_products`.
+
+In discovery:
+
+```text
+product_type
+        =
+the exact object the result must be
+```
+
+In `alternative_to` without a concrete product:
+
+```text
+product_type
+        =
+the object being substituted
+```
+
+The answer is therefore allowed to contain a different `product_type`.
+
+That is not a violation of exact matching; it is the purpose of an alternative search.
+
+The same field participates differently because the operation itself has different semantics.
+
+---
+
+## `relation_type`
+
+For `alternative_to`, each returned `RelatedProduct` can declare the nature of the relation.
+
+If an explicit persisted relation exists, its stored:
+
+```text
+relation_type
+```
+
+is used.
+
+For a relation derived through the normal fallback levels, the runtime relation is:
+
+```text
+same_function
+```
+
+This preserves the stronger `equivalent` meaning only where that stronger relationship was actually established during semantic construction.
+
+---
+
+## `excluded` also works inside related-product search
+
+When `max_price` is supplied to `get_related_products`, over-budget related candidates can also be preserved through `excluded`.
+
+The service walks the same relation levels and, within each level:
+
+1. evaluates the other applicable boundaries;
+2. identifies candidates whose price alone exceeds `max_price`;
+3. orders them using the normal precedence;
+4. collects them up to the global `EXCLUDED_CAP` of two.
+
+This allows an alternative or complement conversation to remain truthful about a relevant product that exists but falls outside the stated budget.
+
+---
+
+# Browsing is deliberately different from discovery
+
+`get_products_by_category` does not use the full discovery semantics.
+
+The customer has already said they want to browse one specific shelf.
+
+The operation therefore starts by defining:
+
+```text
+candidate universe
+=
+products whose category is the requested category
+```
+
+It then applies the supported boundaries:
+
+- price;
+- delivery;
+- availability.
+
+Importantly, browsing does **not** require `is_standalone_gift`.
+
+The user asked to see the contents of a category, not for the backend to decide which items on that shelf deserve to count as main gifts.
+
+The browsing operation also supports an explicit customer-controlled `sort`:
+
+```text
+rating
+price_asc
+price_desc
+```
+
+This sort belongs only to browsing.
+
+It does not modify the recommendation precedence used by discovery or related-product search.
+
+That distinction prevents a request such as:
+
+> “show me the cheapest things in this category”
+
+from silently changing how future gift recommendations are ranked.
+
+---
+
+# Determinism and conversational flexibility
+
+The complete discovery boundary can therefore be expressed as:
+
+```text
+CONVERSATIONAL LAYER
+understands what the customer means
+        ↓
+structured criteria
+        ↓
+CATALOG SERVICE
+        │
+        ├── exact object restriction
+        ├── deterministic boundaries
+        ├── deterministic precedence
+        ├── excluded
+        └── not_applied
+        ↓
+ordered catalog response
+        ↓
+CONVERSATIONAL LAYER
+explains why the returned products make sense
+```
+
+The agent is free to interpret natural language and to explain recommendations naturally.
+
+It is not free to redefine:
+
+- what counts as the requested object;
+- whether a strict budget was satisfied;
+- whether delivery fits;
+- whether an item is available;
+- how the deterministic result order was produced;
+- whether an unresolved criterion was actually applied.
+
+That division is what allows the system to combine conversational flexibility with stable catalog behaviour.
