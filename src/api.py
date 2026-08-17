@@ -28,10 +28,11 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import yaml
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
+from pydantic import TypeAdapter, ValidationError
 
 import normalization
 import selection
@@ -637,6 +638,51 @@ async def find_products_by_criteria(
         excluded=excluded_ or None,
         not_applied=not_applied_ or None,
     )
+
+
+@app.post(
+    "/find_products_by_criteria",
+    include_in_schema=False,
+    dependencies=[Depends(catalog_credential)],
+)
+async def _find_products_by_criteria(
+    criteria_map: Annotated[dict[str, Any], Body()],
+    limit: Annotated[int, Query(ge=1, le=8, description="Products to return, 1 to 8.")] = 8,
+) -> Any:
+    adapters = {
+        "max_price": TypeAdapter(MaxPrice),
+        "target_price": TypeAdapter(TargetPrice),
+        "min_price": TypeAdapter(MinPrice),
+        "recipient": TypeAdapter(Recipient),
+        "relationship": TypeAdapter(Relationship),
+        "occasion": TypeAdapter(Occasion),
+        "use_case": TypeAdapter(UseCaseCriterion),
+        "functional_family": TypeAdapter(FunctionalFamilyCriterion),
+        "buyer_knows_recipient": TypeAdapter(BuyerKnowsRecipient),
+        "product_type": TypeAdapter(ProductType),
+        "category": TypeAdapter(Category),
+        "subcategory": TypeAdapter(Subcategory),
+        "brand": TypeAdapter(Brand),
+        "color": TypeAdapter(Color),
+        "material": TypeAdapter(Material),
+        "max_shipping_days": TypeAdapter(MaxShippingDays),
+        "gift_wrap_required": TypeAdapter(GiftWrapRequired),
+        "stocking_filler": TypeAdapter(bool | None),
+    }
+
+    for key_, value_ in criteria_map.items():
+        adapter = adapters.get(key_)
+        if adapter is None:
+            return recoverable("invalid_parameter", parameter=key_, received=value_)
+
+    validated: dict[str, Any] = {}
+    for key_, value_ in criteria_map.items():
+        try:
+            validated[key_] = adapters[key_].validate_python(value_)
+        except ValidationError:
+            return recoverable("invalid_parameter", parameter=key_, received=value_)
+
+    return await find_products_by_criteria(**validated, limit=limit)
 
 
 @app.get(
