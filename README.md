@@ -4871,3 +4871,1220 @@ HTTP service
 ```
 
 That is part of the boundary design, not an accidental omission.
+
+---
+
+## API contract and response design
+
+The Catalog Service is not exposed as an informal collection of JSON endpoints.
+
+Its public boundary is a **typed Pydantic contract published through OpenAPI**, and that contract is deliberately designed for two consumers at the same time:
+
+- ordinary software clients;
+- the indigo.ai conversational system that imports the specification and exposes its operations to an LLM.
+
+That second consumer changes what good API design means.
+
+A human developer can often compensate for a vague schema by reading implementation code or documentation. An agent cannot be expected to infer undocumented distinctions safely.
+
+For that reason, the contract makes important semantics explicit in:
+
+- operation names;
+- parameter types;
+- parameter descriptions;
+- enum values;
+- field descriptions;
+- distinct response models;
+- recoverable error shapes;
+- technical failure shapes.
+
+The design principle is:
+
+> **If the conversational system needs a distinction to behave correctly, that distinction should exist in the contract rather than only in backend implementation knowledge.**
+
+---
+
+## Pydantic is the contract source
+
+`src/models.py` defines the public response shapes.
+
+Those models are used directly by FastAPI to generate the OpenAPI schemas consumed by indigo.ai.
+
+The relationship is therefore:
+
+```text
+models.py
+    ↓
+Pydantic models
+    ↓
+FastAPI response_model
+    ↓
+OpenAPI schemas
+    ↓
+indigo.ai capability contract
+```
+
+The service does not separately maintain:
+
+```text
+Python object model
++
+manual OpenAPI schema
++
+agent-specific copy
+```
+
+that could drift independently.
+
+The same typed models used to serialize production responses define the contract the agent reads.
+
+---
+
+## One product shape
+
+The central merchandise representation is:
+
+`Product`
+
+All four operations that return actual merchandise use that same product model:
+
+```text
+get_products_by_category
+find_products_by_criteria
+get_related_products
+get_product_details
+```
+
+The base `Product` contains **26 customer-relevant fields**.
+
+This has an important consequence.
+
+A discovery result is not a lightweight search record containing only:
+
+```text
+product_id
+name
+score
+```
+
+that forces the agent to make another request before it can explain the recommendation.
+
+Instead:
+
+```text
+discovery
+    ↓
+complete Product
+    ↓
+agent can explain recommendation
+```
+
+This avoids an unnecessary N+1 interaction pattern between the conversational layer and the Catalog Service.
+
+---
+
+## Complete does not mean unrestricted
+
+The public `Product` is complete **for the product-discovery contract**, not a dump of every backend field.
+
+Four runtime fields remain deliberately outside it:
+
+```text
+description_quality
+tags
+stock
+alt_product_ids
+```
+
+The API therefore makes a distinction between:
+
+```text
+information the service needs internally
+```
+
+and:
+
+```text
+information the conversational consumer needs
+```
+
+For example:
+
+- exact `stock` does not need to travel because recommendation eligibility is represented by `in_stock`;
+- `description_quality` has already influenced deterministic ordering;
+- `alt_product_ids` are an identity-resolution mechanism;
+- `tags` do not participate in the public runtime contract.
+
+The absence of those fields is part of the schema design, not accidental data loss.
+
+---
+
+## Closed vocabularies become real OpenAPI enums
+
+The controlled semantic vocabularies do not remain hidden inside the classification pipeline.
+
+`models.py` dynamically builds actual enum types from `vocabularies.yaml` for:
+
+```text
+UseCase
+FunctionalFamily
+GiftRisk
+SuitableRelationship
+```
+
+For example:
+
+```text
+vocabularies.yaml
+        ↓
+UseCase enum
+        ↓
+Product.use_case
+        ↓
+OpenAPI schema
+        ↓
+indigo.ai
+```
+
+The values are therefore not manually duplicated inside Python.
+
+This prevents a situation in which:
+
+```text
+classifier understands one vocabulary
+API validates another
+agent reads a third
+```
+
+The same controlled values travel across construction, validation and runtime contract.
+
+---
+
+## Definitions travel with the vocabulary
+
+The values alone are not enough.
+
+A term such as:
+
+```text
+taste_dependent
+```
+
+only works reliably if the classifier and the conversational consumer attach the same meaning to it.
+
+`definitions_of(...)` therefore reads the `definicion` associated with each controlled value and makes those definitions available in schema descriptions.
+
+The contract does not merely tell the agent:
+
+```text
+gift_risk ∈ {
+    low,
+    taste_dependent,
+    high_commitment
+}
+```
+
+It also tells it what those concepts mean.
+
+That is particularly important for semantic fields whose names are compact representations of richer decision rules.
+
+---
+
+## `product_type` is the deliberate exception
+
+`product_type` does not become an OpenAPI enum.
+
+Unlike the closed semantic vocabularies, it grows with inventory.
+
+Publishing the entire product-type universe as a large fixed enum would make the agent contract:
+
+- unnecessarily large;
+- inventory-dependent;
+- harder to extend;
+- more expensive to place in model context.
+
+It therefore travels as:
+
+```text
+free text
+```
+
+with explicit contract instructions explaining that the service resolves:
+
+- canonical product types;
+- known aliases;
+
+deterministically.
+
+This is controlled openness, not unvalidated semantics.
+
+---
+
+# Specialized response shapes
+
+Not every product-related concept should use the full `Product` model.
+
+The service defines narrower shapes when giving the agent less information communicates the meaning more accurately.
+
+---
+
+## `ExcludedProduct`
+
+An excluded product is not a recommendation.
+
+It is a relevant candidate that failed a query boundary.
+
+Its shape is deliberately reduced to:
+
+```text
+product_id
+name
+price
+exclusion_reason
+actual
+required
+```
+
+It does **not** include:
+
+```text
+description
+functional_family
+use_case
+gift_risk
+rating
+...
+```
+
+because those fields would encourage the conversational model to treat it as another normal recommendation.
+
+The contract instead gives the agent exactly enough information to say:
+
+> “That product exists, but it exceeds your €50 limit.”
+
+without giving it the full payload normally used to construct a recommendation reason.
+
+This is semantic payload design: the amount of information communicates the role of the object.
+
+---
+
+## `CategorySummary`
+
+A category is not represented as a bare string.
+
+`CategorySummary` contains:
+
+```text
+name
+available_count
+price_min
+price_max
+```
+
+This lets the category capability represent both:
+
+- the structure of the store;
+- the current state of that structure.
+
+A category can exist while currently containing zero available merchandise.
+
+The schema can express that directly.
+
+---
+
+## `RelatedProduct`
+
+A related result is a normal `Product` plus contextual relation information.
+
+It therefore inherits `Product` and adds:
+
+```text
+relation_type
+```
+
+with the admitted values:
+
+```text
+equivalent
+same_function
+```
+
+or `null` where that field does not apply.
+
+This field is not placed in the base `Product`.
+
+A product cannot intrinsically be:
+
+```text
+equivalent
+```
+
+in isolation.
+
+It can only be equivalent **to another product**.
+
+The schema therefore stores that meaning at the point where a relation context actually exists.
+
+---
+
+## `NotApplied`
+
+`NotApplied` represents a failure to apply part of the **input**, not a failure of a product.
+
+Its shape is:
+
+```text
+parameter
+received
+reason
+```
+
+This allows the response to distinguish:
+
+```text
+customer did not provide material
+```
+
+from:
+
+```text
+customer provided material,
+but the service could not resolve it
+```
+
+Without a dedicated shape, both cases would appear simply as absence from `query_understood`.
+
+That would remove information the agent needs to avoid making false claims.
+
+---
+
+# One envelope per operation
+
+The service deliberately does **not** use one universal response envelope.
+
+Instead, each operation has a response model named after that operation:
+
+```text
+GetCategoriesResponse
+GetProductsByCategoryResponse
+FindProductsByCriteriaResponse
+GetRelatedProductsResponse
+GetProductDetailsResponse
+```
+
+This is intentional.
+
+A universal envelope might look convenient:
+
+```text
+results
+result
+total
+offset
+query_understood
+excluded
+not_applied
+currency
+...
+```
+
+but most operations would leave most fields empty.
+
+The conversational consumer would then need to infer whether an absent field means:
+
+```text
+not applicable
+```
+
+or:
+
+```text
+applicable but empty
+```
+
+or:
+
+```text
+not populated because something went wrong
+```
+
+The current design instead allows the operation itself to define which metadata has meaning.
+
+---
+
+## `GetCategoriesResponse`
+
+```text
+results
+currency
+```
+
+No discovery metadata is exposed because none applies.
+
+There is no:
+
+```text
+query_understood
+excluded
+offset
+not_applied
+```
+
+to interpret.
+
+---
+
+## `GetProductsByCategoryResponse`
+
+```text
+results
+total
+offset
+currency
+```
+
+This operation adds exactly the information required for pagination.
+
+It does not expose semantic-discovery metadata because category browsing has different semantics.
+
+---
+
+## `FindProductsByCriteriaResponse`
+
+```text
+results
+query_understood
+excluded
+not_applied
+currency
+```
+
+This is the richest envelope because discovery is the operation where the system must communicate both:
+
+- what it understood;
+- what it could not safely apply;
+- what relevant candidates failed a boundary.
+
+The contract explicitly states that:
+
+```text
+results
+```
+
+contain products satisfying all applied hard boundaries and already ordered from most to least relevant.
+
+The array position is the result of the deterministic ordering.
+
+There is no numeric score field.
+
+---
+
+## `GetRelatedProductsResponse`
+
+```text
+results
+query_understood
+excluded
+currency
+```
+
+There is no `not_applied` field in this response model.
+
+A related-product operation has its own recoverable request behaviours instead of copying the exact discovery envelope.
+
+`query_understood` is optional because it is meaningful particularly when the operation starts from an intention rather than from an identified product.
+
+---
+
+## `GetProductDetailsResponse`
+
+The single-product lookup uses:
+
+```text
+result
+currency
+```
+
+rather than:
+
+```text
+results: [ ... ]
+```
+
+This is a small but deliberate contract decision.
+
+The operation returns exactly one identified product, not a result set.
+
+The schema communicates that cardinality directly.
+
+---
+
+# Currency travels at response level
+
+All merchandise responses use:
+
+```text
+currency = EUR
+```
+
+at envelope level.
+
+Currency is not repeated inside every individual product.
+
+The product therefore carries:
+
+```text
+price = 69
+```
+
+while the enclosing response establishes:
+
+```text
+currency = EUR
+```
+
+For an operation returning eight complete products, this avoids repeating identical metadata eight times without losing meaning.
+
+---
+
+# Optional and absent are not always the same thing
+
+The contract preserves meaningful absence.
+
+For `find_products_by_criteria`:
+
+```text
+excluded
+not_applied
+```
+
+are optional and are omitted when they do not contain information.
+
+This is why the Pydantic model declares them as nullable fields and the endpoint uses:
+
+```text
+response_model_exclude_none = true
+```
+
+Likewise, `get_related_products` excludes `None` values from its serialized response.
+
+This means the agent does not receive:
+
+```json
+{
+  "excluded": null,
+  "not_applied": null
+}
+```
+
+when those concepts have nothing to communicate.
+
+Their absence keeps the successful response smaller and semantically cleaner.
+
+This behaviour also applies recursively to `None` values in those endpoint responses, reducing unnecessary null-valued product fields when using those operations.
+
+By contrast, operations that do not enable `response_model_exclude_none` retain nullable fields according to their normal Pydantic serialization.
+
+The distinction is implemented at the operation boundary rather than by globally stripping every null value from every API response.
+
+---
+
+# Recoverable request problems are content
+
+One of the most important contract decisions is the separation between:
+
+```text
+request understood, but cannot be executed safely
+```
+
+and:
+
+```text
+the service itself failed
+```
+
+The first category uses `RecoverableError`.
+
+The current recoverable vocabulary is:
+
+```text
+invalid_parameter
+conflicting_parameters
+missing_anchor
+product_not_found
+```
+
+These conditions return:
+
+```text
+HTTP 200
+```
+
+with:
+
+```text
+error_type
+```
+
+rather than a transport-level error.
+
+---
+
+## `RecoverableError`
+
+Its complete shape is:
+
+```text
+error_type
+parameter
+received
+product_id
+relation
+```
+
+Only the fields relevant to the particular error need to be populated.
+
+Examples:
+
+```json
+{
+  "error_type": "product_not_found",
+  "product_id": "..."
+}
+```
+
+or:
+
+```json
+{
+  "error_type": "conflicting_parameters",
+  "parameter": ["min_price", "max_price"],
+  "received": {
+    "min_price": 100,
+    "max_price": 50
+  }
+}
+```
+
+The point is not that HTTP 200 means the requested catalog operation succeeded.
+
+It means:
+
+> the service is healthy, the request reached the application, and the resulting problem belongs to the conversational/catalog domain rather than to infrastructure.
+
+That is especially useful in Indigo because a recoverable result can continue through the API Block's Success path and be handled conversationally.
+
+---
+
+## Why `product_not_found` is recoverable
+
+An unknown identifier does not mean the Catalog Service failed.
+
+The backend successfully answered the question:
+
+> “Does this product exist?”
+
+with:
+
+> “No.”
+
+Representing that as a technical failure would conflate catalog content with service health.
+
+The same reasoning applies to `missing_anchor`.
+
+The service understood that the agent requested `pairs_with`, but no source product was supplied.
+
+The next action is to correct the request or continue the conversation, not to retry the same HTTP call as though the server were down.
+
+---
+
+# Automatic FastAPI validation is converted into the recoverable contract
+
+FastAPI would ordinarily return a `422` response for many request-validation failures.
+
+This project deliberately changes that behaviour.
+
+`RequestValidationError` is intercepted and converted to:
+
+```text
+HTTP 200
+error_type = invalid_parameter
+```
+
+with the offending parameter and received value when available.
+
+The generated OpenAPI specification is then modified so that the default:
+
+```text
+422
+HTTPValidationError
+ValidationError
+```
+
+schemas do not remain published as a competing error contract.
+
+Instead, operations that can return a recoverable problem declare their `200` response as:
+
+```text
+normal operation response
+        OR
+RecoverableError
+```
+
+using `oneOf`.
+
+The published contract therefore matches the behaviour of the application rather than exposing FastAPI's framework default alongside a different application-level convention.
+
+---
+
+# Technical failures use a different vocabulary
+
+Actual service-level failures use:
+
+`TechnicalFailure`
+
+Its shape is:
+
+```text
+error_code
+incident_id
+retryable
+```
+
+The current stable `error_code` values are:
+
+```text
+unauthorized
+forbidden
+rate_limited
+service_unavailable
+```
+
+These do **not** travel through the normal HTTP 200 response.
+
+They use non-2xx status codes.
+
+---
+
+## Technical HTTP statuses
+
+The public contract currently distinguishes:
+
+| HTTP status | `error_code` | Meaning |
+|---:|---|---|
+| `401` | `unauthorized` | Credential missing or unknown |
+| `403` | `forbidden` | Valid credential without access to this capability |
+| `429` | `rate_limited` | Request limit exceeded |
+| `503` | `service_unavailable` | Service could not complete the request |
+
+Each technical failure also receives an opaque:
+
+```text
+incident_id
+```
+
+for troubleshooting.
+
+That identifier has no product or customer meaning and should not be shown as part of a normal customer answer.
+
+---
+
+## `retryable` is explicit
+
+A technical failure also declares whether repeating the same request can reasonably succeed without changing the customer's criteria.
+
+The current implementation marks:
+
+```text
+rate_limited
+```
+
+as retryable.
+
+Authentication and authorization failures are not retryable with the same request.
+
+The generic `service_unavailable` response produced by the current exception handler is also marked non-retryable.
+
+The important point is that the consumer does not have to infer retry behaviour from the HTTP status alone.
+
+It exists explicitly in the response schema.
+
+---
+
+# Recoverable and technical failures cannot be confused
+
+The contract intentionally uses two different discriminator names:
+
+```text
+RecoverableError
+    ↓
+error_type
+```
+
+versus:
+
+```text
+TechnicalFailure
+    ↓
+error_code
+```
+
+This makes it possible for Indigo to distinguish the two classes structurally.
+
+Conceptually:
+
+```text
+HTTP 200
+    │
+    ├── normal operation envelope
+    │
+    └── error_type
+           ↓
+       fix / clarify request
+
+non-2xx
+    │
+    └── error_code
+           ↓
+       technical failure handling
+```
+
+A zero-result search is neither of those.
+
+It remains a valid normal response with:
+
+```text
+results = []
+```
+
+and any applicable explanatory metadata.
+
+That gives the system three distinct states:
+
+```text
+valid query, no result
+recoverable request problem
+technical service failure
+```
+
+instead of collapsing them into one generic “error”.
+
+---
+
+# The OpenAPI specification is curated
+
+FastAPI generates the base specification, but the service does not publish it completely untouched.
+
+`openapi_specification()` deliberately modifies the generated document.
+
+It:
+
+1. declares the production server:
+
+```text
+https://indigo-catalog-service.fly.dev
+```
+
+2. adds the `RecoverableError` schema;
+3. removes framework-generated `422` responses;
+4. removes the default validation schemas that no longer belong to the contract;
+5. represents eligible `200` responses as a `oneOf` between the normal response and `RecoverableError`;
+6. retains the explicitly declared technical `401`, `403`, `429` and `503` responses.
+
+The resulting OpenAPI document therefore describes **the application's intended protocol**, not merely FastAPI's defaults.
+
+---
+
+# Hidden routes stay outside the agent contract
+
+The complete HTTP application contains routes that are deliberately absent from OpenAPI.
+
+These include:
+
+```text
+POST /find_products_by_criteria
+GET /_diagnostics/load-report
+```
+
+Both use:
+
+```text
+include_in_schema = false
+```
+
+for different reasons.
+
+The POST route is workflow transport.
+
+The diagnostics route is an operator surface.
+
+Neither should become another tool the Product Discovery Agent can decide to call.
+
+This creates a meaningful distinction:
+
+```text
+implemented HTTP route
+        ≠
+agent capability
+```
+
+Only routes intentionally published in OpenAPI become part of the catalog capability surface.
+
+---
+
+# Operation names are stable tool names
+
+Each public route sets its `operation_id` explicitly to the same canonical capability name:
+
+```text
+get_categories
+get_products_by_category
+find_products_by_criteria
+get_related_products
+get_product_details
+```
+
+This is important because `operation_id` is not merely implementation metadata in this architecture.
+
+It becomes the name of the capability visible to the agent.
+
+A casual rename in the backend could therefore alter the conversational tool surface even if the HTTP path itself remained valid.
+
+The code treats those names as part of the contract.
+
+---
+
+# Parameter descriptions carry operational semantics
+
+The API does not rely only on parameter names.
+
+For example, `target_price` is described as:
+
+```text
+Approximate price. It opens a band of ±20 % around it.
+```
+
+`product_type` explains that it should only be supplied when the customer actually named or unambiguously identified the concrete object.
+
+`relationship` explicitly says that it affects ordering rather than removing products.
+
+`gift_wrap_required` explains that absence is not equivalent to `false`.
+
+`buyer_knows_recipient` explains that only `true` removes the precautionary gift-risk ordering.
+
+These distinctions matter because the tool consumer is an LLM.
+
+A field called:
+
+```text
+relationship
+```
+
+does not, by itself, tell the model whether that value:
+
+- filters;
+- ranks;
+- categorizes;
+- or only changes wording.
+
+The description is therefore part of executable agent guidance.
+
+---
+
+# Multivalue criteria are typed as multivalue criteria
+
+The API contract represents:
+
+```text
+use_case
+functional_family
+```
+
+as lists rather than forcing the agent to collapse them into one value.
+
+The descriptions also specify that several values are:
+
+```text
+alternatives
+```
+
+and not:
+
+```text
+accumulated relevance points
+```
+
+This prevents two possible errors at once:
+
+1. discarding legitimate multi-intent customer requests;
+2. assuming that matching more values in one dimension produces a stronger numerical score.
+
+The schema and selection implementation therefore express the same semantics.
+
+---
+
+# Structural meaning is preferred over prose conventions
+
+Several contract decisions follow the same pattern:
+
+```text
+single product
+        ↓
+result
+
+product collection
+        ↓
+results
+
+invalid but relevant product
+        ↓
+ExcludedProduct
+
+unresolved input
+        ↓
+NotApplied
+
+recoverable request problem
+        ↓
+error_type
+
+technical failure
+        ↓
+error_code
+```
+
+The service does not rely on the agent reading a prose message such as:
+
+> “Warning: this product was over budget.”
+
+and then correctly inferring what role the object has.
+
+The distinction exists structurally.
+
+This makes the contract more reliable for machine consumption.
+
+---
+
+# No score travels
+
+There is no field such as:
+
+```text
+score
+confidence
+relevance
+rank
+weight
+position
+```
+
+inside `Product`.
+
+The service has already performed the deterministic precedence ordering before serialization.
+
+The result itself is:
+
+```text
+results[0]
+results[1]
+results[2]
+...
+```
+
+The array order is the ranking.
+
+This avoids exposing an artificial numerical value that the agent might:
+
+- quote to the customer;
+- compare incorrectly;
+- reinterpret as confidence;
+- use to override the declared precedence.
+
+Ordering is behaviour, not extra product metadata.
+
+---
+
+# Response size is part of the contract design
+
+A full `Product` is intentionally rich, so the API bounds the number of those objects that can travel in one response.
+
+The central contract constants are:
+
+```text
+get_products_by_category
+1–8 · default 8
+
+find_products_by_criteria
+1–8 · default 8
+
+get_related_products
+1–5 · default 3
+
+ABSOLUTE_MAXIMUM = 8
+```
+
+The service therefore controls context size by limiting the number of **complete useful records**, not by returning large numbers of impoverished search hits.
+
+This fits the intended customer experience as well.
+
+Gift discovery benefits more from a small set of understandable candidates than from dozens of barely differentiated items.
+
+---
+
+# The contract is read-only
+
+All public OpenAPI catalog capabilities are read operations.
+
+They expose catalog state but do not mutate:
+
+- source products;
+- prices;
+- inventory;
+- semantic classifications;
+- relations;
+- vocabularies;
+- conversational state.
+
+Even the hidden workflow POST is semantically read-only: its HTTP method exists to carry the structured `criteria_map` body, not to modify the Catalog Service.
+
+This is another useful boundary between the product system and the conversation orchestrator.
+
+---
+
+# Contract summary
+
+The resulting API boundary can be summarized as:
+
+```text
+                       OpenAPI
+                          │
+           ┌──────────────┴──────────────┐
+           │                             │
+      normal catalog               failure semantics
+        operations                        │
+           │                    ┌──────────┴──────────┐
+           │                    │                     │
+           ▼                    ▼                     ▼
+typed operation envelope   RecoverableError     TechnicalFailure
+           │                HTTP 200             non-2xx
+           │                    │                     │
+           ▼                    ▼                     ▼
+Product / RelatedProduct   error_type             error_code
+CategorySummary            fix request            service handling
+ExcludedProduct
+NotApplied
+```
+
+The contract therefore does more than serialize backend objects.
+
+It communicates:
+
+- what the service knows;
+- what it applied;
+- what it could not apply;
+- which products are valid;
+- which products are only explanatory exclusions;
+- whether a problem belongs to the request or to the service;
+- and what information the conversational agent is entitled to claim.
+
+That makes the OpenAPI document an active part of the product-discovery architecture rather than passive API documentation.
