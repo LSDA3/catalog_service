@@ -7532,3 +7532,171 @@ The key principle is:
 > **Workflows make the normal search path explicit; the Product Discovery Agent provides conversational judgement around that path rather than replacing it.**
 
 That gives the system continuity and predictable execution while preserving the flexibility required for real gift-discovery conversations.
+
+---
+
+## Project structure
+
+The repository separates runtime code, source and derived data, construction tooling, tests and deployment configuration.
+
+```text
+catalog_service/
+│
+├── src/
+│   ├── api.py
+│   ├── loader.py
+│   ├── models.py
+│   ├── normalization.py
+│   ├── repository.py
+│   └── selection.py
+│
+├── data/
+│   ├── catalog.csv
+│   ├── semantic_layer.json
+│   └── vocabularies.yaml
+│
+├── scripts/
+│   ├── enrich.py
+│   ├── relate.py
+│   └── validate_semantic.py
+│
+├── prompts/
+│   ├── enrich.md
+│   └── relate.md
+│
+├── tests/
+│   ├── test_api.py
+│   ├── test_loader.py
+│   ├── test_normalization.py
+│   ├── test_relations.py
+│   └── test_selection.py
+│
+├── .github/
+│   └── workflows/
+│       └── deploy.yml
+│
+├── Dockerfile
+├── fly.toml
+├── requirements.txt
+├── bloque-A-datos.md
+├── plan-de-construccion.md
+└── README.md
+```
+
+The directories have deliberately different responsibilities.
+
+| Path | Responsibility |
+|---|---|
+| `src/` | Production Catalog Service code |
+| `data/` | Source catalog, controlled vocabularies and validated semantic artifact |
+| `scripts/` | Construction and semantic validation tooling used outside runtime |
+| `prompts/` | Criteria used by the model-backed construction pipeline |
+| `tests/` | Automated tests for normalization, loading, selection, relations and API behaviour |
+| `.github/workflows/deploy.yml` | CI, semantic construction/validation and Fly.io deployment |
+| `Dockerfile` | Production runtime image |
+| `fly.toml` | Fly.io application configuration |
+| `requirements.txt` | Python dependencies |
+| `bloque-A-datos.md` | Detailed design decisions and data-system specification |
+| `plan-de-construccion.md` | Construction plan and work-order history |
+
+The production container deliberately copies only `src/` and `data/`. Construction prompts, scripts and tests remain outside the deployed image.
+
+This keeps the runtime boundary visible directly in the repository structure:
+
+```text
+construction
+prompts/ + scripts/ + data/ + src/normalization.py
+        ↓
+validated artifacts
+
+runtime
+src/ + data/
+        ↓
+Catalog Service
+```
+
+---
+
+## Running locally
+
+The Catalog Service targets **Python 3.12**. Its runtime and test dependencies are declared in `requirements.txt`.
+
+From the repository root, use a Python 3.12 environment and install the dependencies:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+The runtime Catalog credential is read from:
+
+```text
+CATALOG_API_KEY
+```
+
+and operator diagnostics use the separate:
+
+```text
+DIAGNOSTICS_API_KEY
+```
+
+Both are supplied as environment variables; neither is stored in the repository. For normal local catalog testing, `CATALOG_API_KEY` is the credential required by the five public catalog operations.
+
+For example, in PowerShell:
+
+```powershell
+$env:CATALOG_API_KEY="your-local-key"
+$env:DIAGNOSTICS_API_KEY="your-local-diagnostics-key"
+```
+
+or in a POSIX shell:
+
+```bash
+export CATALOG_API_KEY="your-local-key"
+export DIAGNOSTICS_API_KEY="your-local-diagnostics-key"
+```
+
+Start the service from the repository root with the same application entry point used by the production container:
+
+```bash
+python -m uvicorn api:app --app-dir src --host 0.0.0.0 --port 8080
+```
+
+The application loads the catalog once during process startup from:
+
+```text
+data/catalog.csv
+data/vocabularies.yaml
+data/semantic_layer.json
+```
+
+and constructs `InMemoryCatalog` before serving requests. No Anthropic credential or runtime LLM is required to start the Catalog Service.
+
+Once running, the local OpenAPI surfaces are available at:
+
+```text
+http://localhost:8080/openapi.json
+http://localhost:8080/docs
+```
+
+Authenticated catalog requests use:
+
+```text
+X-Api-Key: <CATALOG_API_KEY>
+```
+
+The complete automated test suite can be run with:
+
+```bash
+python -m pytest tests -q
+```
+
+`pytest` and `httpx` are development/test dependencies in `requirements.txt`; the production Docker image explicitly removes them after installation because they are not needed by the running service.
+
+Local runtime testing therefore does **not** require executing:
+
+```text
+scripts/enrich.py
+scripts/relate.py
+```
+
+Those belong to semantic construction. The committed and validated `semantic_layer.json` is already the artifact consumed by the service.
