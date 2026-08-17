@@ -8147,3 +8147,388 @@ Both validation and tests run even when a code or infrastructure change does not
 That gives the pipeline an important property:
 
 > **A probabilistic construction step may produce the derived data, but only deterministic validation and tests decide whether that data is allowed to reach production.**
+
+---
+
+## CI/CD and semantic pipeline
+
+GitHub Actions owns the path from a repository change to a validated production deployment.
+
+The workflow is:
+
+```text
+change pushed to main
+        ↓
+determine whether semantic construction is required
+        ↓
+enrich semantic fields if required
+        ↓
+recompute relations if required
+        ↓
+semantic validation
+        ↓
+automated tests
+        ↓
+commit updated derived artifacts if any
+        ↓
+deploy to Fly.io
+```
+
+The important distinction is that **running CI does not automatically mean calling an LLM**.
+
+Semantic construction runs only when inputs capable of changing semantic data have changed. Validation and tests run regardless.
+
+### Workflow triggers
+
+The workflow `Build the catalog and deploy` runs on pushes to `main` that affect:
+
+```text
+data/
+prompts/
+scripts/
+src/
+tests/
+requirements.txt
+Dockerfile
+.dockerignore
+fly.toml
+.github/workflows/deploy.yml
+```
+
+Pull requests run the validation workflow for changes to the application, data, semantic construction or tests.
+
+Documentation-only changes such as edits to `README.md` do not trigger a production deployment.
+
+### Construction environment
+
+CI uses:
+
+```text
+Ubuntu
+Python 3.12
+```
+
+and installs the normal project dependencies first.
+
+The Anthropic SDK is then installed separately in GitHub Actions:
+
+```bash
+pip install anthropic
+```
+
+It is deliberately absent from the runtime dependency set.
+
+`ANTHROPIC_API_KEY` is supplied only to the semantic construction steps through GitHub Secrets.
+
+### Conditional semantic enrichment
+
+`scripts/enrich.py` is executed when the semantic inputs require reconstruction.
+
+Relevant inputs include:
+
+```text
+data/catalog.csv
+data/vocabularies.yaml
+prompts/enrich.md
+prompts/relate.md
+```
+
+If those inputs are unchanged, CI explicitly skips model-backed classification.
+
+This means a change to application code, tests or infrastructure can be validated and deployed without unnecessarily reclassifying the catalog.
+
+### Conditional relationship reconstruction
+
+`scripts/relate.py` runs when relationship-relevant inputs have changed, including:
+
+```text
+data/catalog.csv
+data/semantic_layer.json
+prompts/relate.md
+```
+
+It also runs when the enrichment step has modified `semantic_layer.json` during the current workflow.
+
+When relation inputs have not changed, the existing validated relationship artifact is reused.
+
+### Deterministic gates always run
+
+Regardless of whether an LLM was used during the workflow, two deterministic gates always execute:
+
+```bash
+python scripts/validate_semantic.py \
+  --csv data/catalog.csv \
+  --semantic data/semantic_layer.json
+```
+
+followed by:
+
+```bash
+python -m pytest tests -q
+```
+
+A failure in either step prevents deployment.
+
+The pipeline therefore treats model output as a **candidate build artifact**, not as production data merely because the model produced it.
+
+### Derived artifacts are committed
+
+When semantic construction changes:
+
+```text
+data/semantic_layer.json
+data/vocabularies.yaml
+```
+
+GitHub Actions commits those files back to the repository with:
+
+```text
+Recompute the semantic layer
+```
+
+The workflow has `contents: write` permission specifically because those derived artifacts are versioned rather than remaining transient CI output.
+
+The resulting repository therefore records the exact semantic state that was validated and deployed.
+
+### Concurrent builds are serialized
+
+The workflow uses:
+
+```text
+build-catalog-${{ github.ref }}
+```
+
+as its concurrency group with:
+
+```text
+cancel-in-progress = false
+```
+
+Two builds affecting the same branch are therefore queued rather than allowing one partially completed semantic reconstruction to be cancelled while another writes over the same artifacts.
+
+### CI/CD boundary
+
+The pipeline can be summarized as:
+
+```text
+PROBABILISTIC
+semantic enrichment / relation construction
+        ↓
+PERSIST
+versioned derived artifact
+        ↓
+DETERMINISTIC
+semantic validation + pytest
+        ↓
+DEPLOY
+only validated state reaches Fly.io
+```
+
+This is the central CI/CD invariant:
+
+> **The LLM may propose semantic data; deterministic code decides whether that data can become production state.**
+
+---
+
+## Deployment
+
+The Catalog Service is deployed to Fly.io as:
+
+```text
+indigo-catalog-service
+```
+
+using the repository's `Dockerfile` and `fly.toml`.
+
+Deployment is executed from GitHub Actions with:
+
+```bash
+flyctl deploy --remote-only --ha=false
+```
+
+using `FLY_API_TOKEN` from GitHub Secrets.
+
+### Production image
+
+The runtime image is based on:
+
+```text
+python:3.12-slim
+```
+
+and starts the service with:
+
+```bash
+python -m uvicorn api:app \
+  --app-dir src \
+  --host 0.0.0.0 \
+  --port 8080
+```
+
+Only two application directories are copied into the image:
+
+```text
+src/
+data/
+```
+
+The deployed container therefore contains the deterministic service and the already-built catalog state, not the semantic construction environment.
+
+### Remote build context
+
+`.dockerignore` prevents local or construction-only material from even being uploaded to the remote Fly builder.
+
+Among the excluded content are:
+
+```text
+.venv/
+.git/
+.github/
+prompts/
+scripts/
+tests/
+*.md
+.env
+*.key
+```
+
+This reduces the remote build context while also reinforcing the runtime security boundary.
+
+### Fly application configuration
+
+The application is configured with:
+
+```text
+primary_region = fra
+internal_port = 8080
+```
+
+Frankfurt was selected because indigo.ai is the synchronous runtime caller of the Catalog Service.
+
+The deployment is therefore located for the service-to-service path rather than for the developer's physical location.
+
+### HTTPS
+
+Fly Proxy is the public network boundary and:
+
+```text
+force_https = true
+```
+
+ensures authenticated catalog traffic reaches the service over HTTPS.
+
+The application itself continues to listen on its internal HTTP port inside Fly's private network.
+
+### Machine lifecycle
+
+The current configuration uses:
+
+```text
+auto_start_machines = true
+auto_stop_machines = "stop"
+min_machines_running = 1
+```
+
+so at least one Machine remains available.
+
+This avoids making the first customer catalog request pay for a cold start and is also consistent with the current process-local rate limiter.
+
+The machine currently uses:
+
+```text
+shared-cpu-1x
+512 MB RAM
+```
+
+which is sufficient for the service's current in-memory catalog and Python/FastAPI runtime.
+
+### Health check
+
+Fly checks:
+
+```text
+GET /openapi.json
+```
+
+every:
+
+```text
+30 seconds
+```
+
+with:
+
+```text
+timeout = 5 seconds
+grace_period = 15 seconds
+```
+
+This verifies that FastAPI is actually responding after startup rather than merely checking that port `8080` is open.
+
+The internal probe sends:
+
+```text
+X-Forwarded-Proto: https
+```
+
+so the HTTPS enforcement at the public edge does not turn the internal health request into a redirect that the health checker would interpret as a failure.
+
+### Runtime secrets
+
+The production application receives:
+
+```text
+CATALOG_API_KEY
+DIAGNOSTICS_API_KEY
+```
+
+through Fly Secrets.
+
+They are not stored in:
+
+```text
+fly.toml
+Dockerfile
+repository source
+```
+
+The deployment token and semantic-construction key remain in GitHub instead:
+
+```text
+FLY_API_TOKEN
+ANTHROPIC_API_KEY
+```
+
+This preserves the separation between:
+
+```text
+construction credentials
+deployment credentials
+runtime credentials
+```
+
+### Deployment invariant
+
+The production path is therefore:
+
+```text
+GitHub repository
+        ↓
+semantic state already built and validated
+        ↓
+remote Docker build
+        ↓
+src/ + data/
+        ↓
+Fly Machine
+        ↓
+load catalog into memory
+        ↓
+health check succeeds
+        ↓
+HTTPS Catalog Service
+```
+
+No semantic enrichment or relationship construction happens during deployment startup.
+
+The deployed process only reconstructs the validated runtime catalog and serves it deterministically.
