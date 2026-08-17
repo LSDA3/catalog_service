@@ -983,3 +983,629 @@ At no point in that request does the Catalog Service clean the CSV, reclassify a
 Those decisions were already made and validated before the container was deployed.
 
 That boundary — **probabilistic construction where it can be validated, deterministic catalog behaviour where product truth matters, and probabilistic conversation where flexibility is useful** — is the core of the architecture.
+
+---
+
+## Data lifecycle
+
+The catalog has **three distinct moments in its lifecycle**:
+
+1. **construction**, where deterministic source normalization and model-assisted semantic enrichment produce a validated derived artifact;
+2. **process startup**, where the deployed service reconstructs the same canonical product universe and joins it with that artifact;
+3. **request time**, where already-loaded products are filtered, ordered and returned without rebuilding or reinterpreting the catalog.
+
+Keeping these moments separate is a core system invariant.
+
+```text
+                       1 · CONSTRUCTION
+                       GitHub Actions
+                             │
+          source data + vocabularies + prompts
+                             │
+                             ▼
+                 deterministic canonicalization
+                             │
+                             ▼
+               semantic enrichment + relations
+                             │
+                             ▼
+                     semantic validation
+                             │
+                         automated tests
+                             │
+                             ▼
+                versioned semantic artifacts
+                             │
+                          deploy
+                             │
+                             │
+              ───────────────────────────
+                             │
+                             ▼
+                    2 · PROCESS STARTUP
+                        Fly.io container
+                             │
+               source catalog canonicalized
+                 with THE SAME implementation
+                             +
+                  semantic artifact loaded
+                             │
+                             ▼
+                    canonical Product model
+                             │
+                      InMemoryCatalog
+                             │
+                             │
+              ───────────────────────────
+                             │
+                             ▼
+                       3 · REQUEST TIME
+                             │
+                     already-loaded data
+                             │
+             filter → order → relate → serialize
+                             │
+                             ▼
+                         API response
+```
+
+The same files participate differently at each moment. What must not happen is for one stage to silently invent a second interpretation of the catalog.
+
+---
+
+### 1. Construction
+
+Construction runs in GitHub Actions, not inside the production application.
+
+Its purpose is to transform the store's source catalog into a **validated semantic representation that can later be consumed deterministically**.
+
+The construction inputs are:
+
+- `data/catalog.csv` — factual product source;
+- `data/vocabularies.yaml` — controlled semantic vocabulary, definitions and aliases;
+- `prompts/enrich.md` — semantic classification criterion;
+- `prompts/relate.md` — relationship classification criterion;
+- `src/normalization.py` — deterministic canonicalization rules.
+
+The principal derived output is:
+
+- `data/semantic_layer.json`.
+
+`data/vocabularies.yaml` can also change during construction when a genuinely new product introduces a new `product_type`.
+
+Construction itself contains several different kinds of work and deliberately does not treat all of them as model tasks.
+
+---
+
+### Deterministic canonicalization happens before semantic reasoning
+
+The first important distinction is between **normalizing information that is already present** and **classifying information that does not exist explicitly in the source**.
+
+`src/normalization.py` handles the first category.
+
+It performs deterministic operations such as:
+
+- parsing supported price formats;
+- preserving a missing price as missing rather than inventing one;
+- interpreting stock quantity and availability;
+- normalizing category formatting;
+- normalizing booleans and numeric fields;
+- detecting product duplicates;
+- selecting one canonical `product_id`;
+- preserving absorbed identifiers as `alt_product_ids`;
+- carrying additional categories into `secondary_categories`;
+- preserving missing `rating` and `reviews_count` as missing;
+- marking insufficient descriptions through `description_quality`;
+- expanding `recipient` with `anyone` where the product is not genuinely gender-specific or restricted to children;
+- emitting data-quality warnings.
+
+If a value is genuinely ambiguous, the code does **not** guess.
+
+For example, a price representation that cannot be distinguished safely between decimal and thousands notation raises `AmbiguousCatalog` with the row, column, value and reason.
+
+This is an intentional boundary:
+
+> Formatting variation may be normalized. Missing or ambiguous facts may not be invented.
+
+The result of this stage is the canonical product universe against which both semantic construction and production runtime operate.
+
+For the current source:
+
+```text
+152 source rows
+      ↓
+deterministic canonicalization
+      ↓
+150 canonical products
+```
+
+The distinction between rows and products therefore exists before any semantic recommendation logic begins.
+
+---
+
+### Semantic enrichment adds information the source does not contain
+
+Once products have a stable canonical identity, `scripts/enrich.py` constructs the semantic fields required by discovery.
+
+This is where a language model is useful: not to answer customer requests, but to convert product descriptions and catalog facts into **controlled, persistent domain classifications**.
+
+The semantic decision is model-assisted, but its output is not accepted as arbitrary text.
+
+The classifier must operate within the vocabulary and structural rules defined by the project.
+
+For the controlled fields, proposed values are checked against `vocabularies.yaml` before being written.
+
+If the model places a real value in the wrong vocabulary, invents an undeclared value, omits a required field or returns an invalid type, the script does not silently repair the answer and continue.
+
+Instead:
+
+1. the exact validation problem is identified;
+2. that problem is returned to the model;
+3. the model receives a bounded opportunity to correct its answer;
+4. if the output remains invalid after the configured attempts, construction fails without accepting the invalid classification.
+
+The current implementation allows **three attempts**.
+
+This creates a useful division of responsibility:
+
+- the model makes the semantic judgement;
+- deterministic code decides whether that judgement is admissible.
+
+---
+
+### `product_type` is controlled but intentionally open
+
+Most semantic vocabularies are closed: the classifier must choose among concepts that already exist.
+
+`product_type` is different because inventory can legitimately introduce a type of object that has never appeared before.
+
+For that reason it is controlled but extensible.
+
+When a new product genuinely requires a new `product_type`, `enrich.py` can register it together with:
+
+- its definition;
+- its aliases.
+
+That registration happens in the same construction run so that the semantic artifact cannot refer to a type that the vocabulary does not yet know.
+
+A new `product_type` caused only by inventory growth is not considered a change in the meaning of the existing classification system. It therefore does **not** by itself increment the vocabulary version or require every existing product to be reclassified.
+
+This distinction prevents ordinary catalog growth from unnecessarily rebuilding the entire semantic model.
+
+---
+
+### Enrichment is incremental unless the classification criterion changes
+
+Model-backed work is not repeated merely because CI runs.
+
+`enrich.py` distinguishes between two situations.
+
+#### Inventory growth
+
+If the classification criterion has not changed, products that already have a valid semantic entry keep it.
+
+Only canonical products without an entry need classification.
+
+This makes ordinary catalog growth incremental.
+
+#### Criterion change
+
+If the meaning of the classification has changed, existing classifications can no longer safely be assumed to mean the same thing.
+
+A criterion change includes changes such as:
+
+- modifications to `prompts/enrich.md`;
+- changes to the closed vocabularies;
+- redefinition or removal of an existing `product_type`;
+- changes to an existing type's definition or aliases;
+- a vocabulary version change.
+
+In those cases, the whole catalog is reclassified.
+
+The reason is more important than the optimization:
+
+> A semantic artifact in which half the products were classified under one meaning and half under another can still be structurally valid while being semantically wrong.
+
+The pipeline therefore distinguishes **new inventory** from **changed meaning**.
+
+---
+
+### Product relationships are recomputed globally
+
+`scripts/relate.py` follows a different lifecycle from product-owned semantic fields.
+
+Relationships are **not incremental**.
+
+A new product can change the correct relationships of products that already existed. Adding a new chef's knife, for example, may create a new valid complement or alternative for products that were previously related only to the existing knife.
+
+For this reason, when relation construction is required, the relationship mesh is reconsidered over the complete canonical catalog.
+
+The script constructs and validates two different relationship families:
+
+- `pairs_with`;
+- `alternative_to`.
+
+They are persisted differently because they mean different things.
+
+#### `pairs_with`
+
+A pairing has direction in the persisted artifact.
+
+It is stored from the accessory toward the main product.
+
+That direction contains semantic meaning, so it is not normalized away by sorting identifiers.
+
+#### `alternative_to`
+
+An alternative relation is symmetric.
+
+It is persisted only once, under the lexicographically smaller `product_id`, together with its `relation_type`.
+
+The loader later makes the other side aware of that relationship at runtime.
+
+This avoids storing the same semantic fact twice and prevents two copies of the relationship from drifting apart.
+
+As with enrichment, the model proposes semantic relationships but deterministic validation controls what is allowed to become persistent data.
+
+Invalid references, self-relations, invalid relation types, conflicting duplicate relations and other structural violations cause the proposed result to be rejected rather than repaired silently.
+
+---
+
+### The semantic gate validates what production will actually consume
+
+After construction, `scripts/validate_semantic.py` acts as a **deployment gate**.
+
+It does not ask whether the model made aesthetically good recommendations. Its responsibility is structural and referential integrity.
+
+The validator reconstructs the canonical catalog using the same `normalization.py` implementation and checks the derived artifact against that universe.
+
+Among the invariants it enforces are:
+
+- the semantic layer and vocabulary declare the expected version;
+- the set of semantic entries matches the set of canonical products exactly;
+- no canonical product is missing a semantic entry;
+- no semantic entry exists without a canonical product;
+- required semantic fields are present;
+- required semantic fields are non-empty where the contract requires it;
+- closed-vocabulary values really belong to their declared vocabulary;
+- every `product_type` used by a product is declared;
+- `product_type` definitions exist;
+- aliases do not resolve ambiguously to multiple types;
+- gender-specific declarations use admitted values;
+- boolean semantic fields are actually boolean;
+- relationship references point only to canonical products;
+- a product is never related to itself;
+- relationships are persisted only once according to their storage rule;
+- `relation_type` contains an admitted value;
+- redundant derived `same_function` relationships are not persisted when shared `product_type` already expresses them;
+- newly introduced product types are justified by actual catalog growth;
+- newly registered types are actually used.
+
+Referential integrity is deliberately based on the **150 canonical product identifiers**, not the 152 raw identifiers.
+
+An absorbed `alt_product_id` represents another identifier for the same object; it is not a second semantic node.
+
+If the gate reports any failure, it exits unsuccessfully and **the deployment does not continue**.
+
+There is no runtime fallback that says “deploy it anyway and let the agent work around the missing classification.”
+
+The artifact either satisfies the contract or it is not production data.
+
+---
+
+### Automated tests follow semantic validation
+
+The semantic gate and the automated test suite have complementary purposes.
+
+The gate asks:
+
+> Is the derived catalog internally complete and structurally coherent?
+
+The tests ask:
+
+> Does the service behave according to the implemented catalog contract?
+
+Both run before deployment.
+
+This distinction matters because structural semantic validity alone does not prove selection behaviour, API behaviour, authentication, error handling or ordering semantics.
+
+The complete test strategy is documented later in this README.
+
+---
+
+### Derived artifacts are versioned
+
+When construction modifies `semantic_layer.json` or legitimately extends `vocabularies.yaml`, the pipeline commits those artifacts back to the repository.
+
+This is deliberate.
+
+The production semantic state is therefore:
+
+- inspectable;
+- versioned;
+- diffable;
+- reproducible;
+- tied to the source and criterion that produced it.
+
+The semantic layer is not hidden transient state inside an LLM call.
+
+It is part of the application data model.
+
+---
+
+## 2. Process startup
+
+The second lifecycle moment begins when the deployed Docker container starts.
+
+No construction-time LLM is available here.
+
+The runtime image contains the application code and the three data files:
+
+```text
+catalog.csv
+vocabularies.yaml
+semantic_layer.json
+```
+
+`loader.py` combines them into the model the service will use for the lifetime of that process.
+
+Importantly, the service does **not** simply trust that because CI previously validated the files, every possible runtime mismatch should be ignored.
+
+Startup maintains its own critical invariant.
+
+---
+
+### The same canonicalization runs again
+
+`loader.py` reads the semantic layer and then invokes `normalization.canonicalize(...)` over the original CSV.
+
+This is the **same Python implementation used during construction**.
+
+There is no second set of CSV-cleaning rules inside `loader.py`.
+
+That means:
+
+```text
+CI's idea of "the canonical catalog"
+                  =
+runtime's idea of "the canonical catalog"
+```
+
+This equality is fundamental.
+
+If CI validated one set of product identities but runtime independently constructed another, semantic coverage would no longer guarantee anything.
+
+---
+
+### The semantic layer must cover exactly the runtime catalog
+
+Once canonicalization is complete, the loader compares:
+
+- canonical identifiers derived from the source catalog;
+- identifiers present in `semantic_layer.json`.
+
+The sets must be exactly equal.
+
+If products are missing from the semantic layer or semantic entries exist without a canonical source product, startup raises `IncompleteSemanticLayer`.
+
+The service does not:
+
+- fabricate a classification;
+- ignore the product;
+- partially start;
+- ask an LLM to repair it.
+
+It fails before serving an incomplete catalog.
+
+CI is the first protection against an invalid artifact; startup is the final protection at the point of use.
+
+---
+
+### Source facts and semantic facts are joined
+
+For every canonical product, `loader.py` constructs the runtime `Product` from two sources.
+
+The canonical source contributes factual catalog information such as:
+
+- identity;
+- name;
+- description;
+- price;
+- delivery;
+- gift-wrap availability;
+- brand;
+- color;
+- material;
+- availability;
+- categories;
+- recipient information;
+- occasion;
+- rating and review count.
+
+The semantic artifact contributes derived discovery information such as:
+
+- `product_type`;
+- `functional_family`;
+- `use_case`;
+- `suitable_relationships`;
+- `gift_risk`;
+- `is_standalone_gift`;
+- `stocking_filler`;
+- product relationships.
+
+Neither file replaces the other.
+
+The semantic layer augments the canonical source.
+
+---
+
+### Persisted relationships are resolved for runtime use
+
+Relations are deliberately stored once in `semantic_layer.json`, but the runtime needs to query them from either endpoint.
+
+The loader therefore resolves the persisted representation into the bidirectional runtime view where appropriate.
+
+For `pairs_with` and `alternative_to`, both related products become aware of the relation in memory.
+
+`relation_type` remains separate from `Product` because it describes **the relation between two products**, not an intrinsic property of either product.
+
+This is an example of a broader design rule used throughout the service:
+
+> Data is stored and exposed according to what it means, not merely according to what is convenient to serialize.
+
+---
+
+### Some runtime information deliberately stays outside the public `Product` contract
+
+The loader also keeps information needed internally by the service but not intended to travel with every product response.
+
+This includes:
+
+- `description_quality`;
+- `tags`;
+- `stock`;
+- `alt_product_ids`.
+
+Those fields still have runtime purposes.
+
+For example:
+
+- `description_quality` participates in precedence ordering;
+- `alt_product_ids` allow an absorbed identifier to resolve to its canonical product.
+
+Keeping something outside the public product envelope does not mean discarding it. It means the API contract does not expose information the conversational agent does not need.
+
+---
+
+### The in-memory repository is built once
+
+The resulting products are loaded into `InMemoryCatalog`.
+
+It provides:
+
+- the complete canonical product set;
+- lookup by canonical identifier;
+- lookup through absorbed identifiers;
+- off-contract runtime information;
+- relationship metadata;
+- normalized category names.
+
+At this point startup is complete.
+
+The service has moved from **versioned source + derived files** to **ready-to-query runtime objects**.
+
+No database migration, vector index construction or model warm-up is required.
+
+---
+
+## 3. Request time
+
+The third lifecycle moment is deliberately the simplest.
+
+When indigo.ai calls the deployed service, the catalog has already been:
+
+- normalized;
+- deduplicated;
+- semantically classified;
+- related;
+- validated;
+- loaded;
+- joined;
+- indexed for identifier lookup.
+
+A request does **not** repeat those operations.
+
+The request path operates on the in-memory model.
+
+Depending on the operation, it can:
+
+- resolve declared aliases;
+- identify an exact requested object;
+- apply selection boundaries;
+- order valid candidates by precedence;
+- browse a category;
+- retrieve a product;
+- resolve alternatives or complements;
+- construct `excluded`;
+- construct `not_applied`;
+- shape the typed response.
+
+The result is then serialized through the FastAPI/Pydantic contract.
+
+There is:
+
+- no call to Anthropic;
+- no semantic reclassification;
+- no relation reconstruction;
+- no CSV mutation;
+- no database query;
+- no vector search;
+- no embedding request.
+
+The conversational LLM exists above this boundary in indigo.ai. It decides what capability is useful and explains what the API returns, but it does not perform the catalog's deterministic work itself.
+
+---
+
+### Why normalization is not repeated per request
+
+The source catalog is immutable during the lifetime of a deployed process.
+
+Running canonicalization for every customer turn would therefore produce the same result repeatedly while adding unnecessary latency and another opportunity for request-time failure.
+
+Canonicalization belongs at process startup because that is the point where raw persisted data becomes runtime application state.
+
+After that, request handling can remain a pure operation over known objects.
+
+---
+
+### Why semantic enrichment is not performed at startup either
+
+Semantic enrichment is different from deterministic normalization.
+
+It uses a model and can produce new derived data.
+
+Running it every time a container starts would create several problems:
+
+- two instances could derive different semantic states from the same deployment;
+- startup would depend on an external model provider;
+- cold starts would become expensive and slow;
+- the semantic state actually serving customers would no longer be versioned;
+- a model failure could make an otherwise valid deployment unavailable;
+- CI could no longer validate exactly what production would consume.
+
+For those reasons, semantic construction happens **before deployment**, while deterministic assembly happens **at startup**.
+
+---
+
+## The lifecycle invariant
+
+The complete design can be summarized as:
+
+```text
+BUILD
+probabilistic semantic judgement
+        +
+deterministic validation
+        ↓
+versioned artifact
+
+STARTUP
+deterministic reconstruction
+        +
+exact artifact/catalog join
+        ↓
+in-memory product model
+
+REQUEST
+deterministic selection
+        +
+typed serialization
+        ↓
+catalog response
+```
+
+The probabilistic part of catalog construction therefore happens at a moment where its result can be **persisted, inspected, validated, tested and rejected**.
+
+By the time a customer is waiting for an answer, that uncertainty has already been converted into validated application data.
+
+That is the central reason for the lifecycle split.
