@@ -7700,3 +7700,450 @@ scripts/relate.py
 ```
 
 Those belong to semantic construction. The committed and validated `semantic_layer.json` is already the artifact consumed by the service.
+
+---
+
+## Configuration and security
+
+The Catalog Service uses a deliberately small security model designed for a **service-to-service integration between indigo.ai and the backend**, rather than for direct end-user authentication.
+
+The main controls are:
+
+```text
+HTTPS
+    ↓
+API credential
+    ↓
+capability separation
+    ↓
+rate limiting
+    ↓
+typed application boundary
+    ↓
+deterministic read-only catalog operations
+```
+
+Secrets, construction-time model access and production runtime access are kept in separate environments.
+
+### Runtime credentials
+
+The service recognizes two runtime credentials:
+
+| Environment variable | Capability |
+|---|---|
+| `CATALOG_API_KEY` | Five catalog operations used by indigo.ai |
+| `DIAGNOSTICS_API_KEY` | Operator diagnostics only |
+
+Both travel through:
+
+```text
+X-Api-Key
+```
+
+but they are **not interchangeable**.
+
+A valid Catalog credential cannot access diagnostics, and the Diagnostics credential cannot access catalog capabilities. An unknown or missing credential is rejected with `401`; a valid credential for the wrong capability receives `403`.
+
+This means the service does not treat possession of any valid key as unrestricted application access.
+
+### Secrets are not stored in the repository
+
+The production credentials are supplied through **Fly Secrets**.
+
+Construction and deployment use different secrets in **GitHub Secrets**:
+
+```text
+GitHub Actions
+    ANTHROPIC_API_KEY
+    FLY_API_TOKEN
+
+Fly runtime
+    CATALOG_API_KEY
+    DIAGNOSTICS_API_KEY
+```
+
+The separation is intentional.
+
+`ANTHROPIC_API_KEY` exists only where semantic construction may call the model. `FLY_API_TOKEN` exists only for deployment. Neither is a runtime Catalog Service credential.
+
+Conversely, the deployed service does not require the Anthropic key.
+
+### The production image cannot perform semantic construction
+
+Security is also enforced through what the container **does not contain**.
+
+The Docker image copies only:
+
+```text
+src/
+data/
+```
+
+Construction material is deliberately excluded:
+
+```text
+prompts/
+scripts/
+tests/
+```
+
+and the production build removes `pytest` and `httpx` after dependency installation.
+
+`.dockerignore` additionally prevents those directories, local environments, Git history, `.env` files and key files from entering the remote Docker build context.
+
+This gives the runtime boundary a useful property:
+
+```text
+production container
+        │
+        ├── has validated semantic data
+        ├── has deterministic runtime code
+        │
+        └── does not have
+             construction prompts
+             construction scripts
+             Anthropic credential
+```
+
+So the rule that classification does not happen during customer requests is supported by deployment structure, not only by convention.
+
+### HTTPS is enforced at the Fly boundary
+
+`fly.toml` enables:
+
+```text
+force_https = true
+```
+
+for the public HTTP service.
+
+This matters because the Catalog credential is transmitted in a request header and should not cross the public network over plaintext HTTP.
+
+The application itself listens internally on port `8080`; Fly Proxy provides the external HTTPS boundary.
+
+The internal health probe uses HTTP because it runs inside Fly's private service path, not because public HTTP traffic is accepted.
+
+### OpenAPI and Swagger are intentionally public
+
+The following endpoints do not require the Catalog credential:
+
+```text
+/openapi.json
+/docs
+```
+
+That is intentional.
+
+indigo.ai needs to read the OpenAPI specification in order to import the catalog capabilities, and Fly uses `/openapi.json` for the application health check.
+
+The tests explicitly verify that both endpoints remain reachable without authentication and that the OpenAPI document itself contains **no credential value**.
+
+Public API documentation therefore does not imply public catalog access.
+
+The schema is visible; executing protected operations still requires the Catalog credential.
+
+### Diagnostics remain outside the public agent surface
+
+The operator endpoint:
+
+```text
+/_diagnostics/load-report
+```
+
+requires the Diagnostics credential and is deliberately omitted from OpenAPI.
+
+indigo.ai therefore does not receive it as a callable capability.
+
+The hidden workflow-facing:
+
+```text
+POST /find_products_by_criteria
+```
+
+is also omitted from the public specification.
+
+The implemented HTTP surface is therefore larger than the tool surface exposed to the conversational model.
+
+This reduces unnecessary agent authority.
+
+### Rate limiting
+
+The application maintains separate sliding-window rate limits:
+
+```text
+catalog      60 requests / 60 seconds
+diagnostics  10 requests / 60 seconds
+```
+
+The two counters are independent.
+
+When the limit is exceeded, the service returns:
+
+```text
+HTTP 429
+error_code = rate_limited
+retryable = true
+```
+
+The tests verify both limits and verify that exhausting the Diagnostics allowance does not consume the Catalog allowance.
+
+The current limiter is intentionally **process-local**.
+
+That means its state:
+
+- resets when the process restarts;
+- would be independent for each running container.
+
+The current Fly configuration keeps one Machine running, so the runtime topology is consistent with that implementation.
+
+For a horizontally scaled deployment, the rate-limiting mechanism would need to be reconsidered if a global rate rather than a per-instance rate were required.
+
+### Authentication failures do not leak internal detail
+
+Technical failures return a stable external structure:
+
+```text
+error_code
+incident_id
+retryable
+```
+
+rather than raw exception content.
+
+An internal service exception is converted into:
+
+```text
+HTTP 503
+error_code = service_unavailable
+```
+
+with an opaque `incident_id`.
+
+The test suite explicitly injects an internal exception and verifies that the exception message itself does not travel in the HTTP response.
+
+This keeps troubleshooting identity available without exposing implementation detail to the caller.
+
+### Read-only public capabilities
+
+The five public catalog operations do not mutate:
+
+- the source catalog;
+- semantic classifications;
+- vocabularies;
+- product relationships;
+- inventory;
+- conversational state.
+
+Even the hidden workflow `POST` is semantically read-only; POST is used because the workflow sends `criteria_map` as a structured body.
+
+Catalog mutation happens through the controlled repository/build lifecycle, not through customer-facing API operations.
+
+### Security boundary summary
+
+The resulting boundary is:
+
+```text
+GitHub construction
+    │
+    ├── ANTHROPIC_API_KEY
+    └── FLY_API_TOKEN
+            │
+            ▼
+        deployment
+            │
+            ▼
+Fly HTTPS boundary
+            │
+            ▼
+      X-Api-Key
+            │
+      ┌─────┴─────┐
+      │           │
+   Catalog    Diagnostics
+      │           │
+  60/minute   10/minute
+      │           │
+      └─────┬─────┘
+            ▼
+      read-only service
+```
+
+The model is therefore not trusted with infrastructure credentials or authority to modify catalog state.
+
+It receives access only to the catalog capabilities required for the conversation.
+
+---
+
+## Testing and validation
+
+Testing is split between **semantic validation** and **behavioural tests**.
+
+They answer different questions:
+
+```text
+validate_semantic.py
+        ↓
+"Is the derived catalog internally valid?"
+
+pytest
+        ↓
+"Does the application behave correctly?"
+```
+
+Both gates run in GitHub Actions before deployment.
+
+### Semantic validation
+
+The CI pipeline always executes:
+
+```bash
+python scripts/validate_semantic.py \
+  --csv data/catalog.csv \
+  --semantic data/semantic_layer.json
+```
+
+even when the semantic layer was not rebuilt during that run.
+
+This ensures that the actual artifact about to be deployed remains compatible with the canonical catalog and vocabulary.
+
+A failed semantic gate stops the pipeline before Fly deployment.
+
+The detailed invariants enforced by this validator are described in the Data lifecycle section.
+
+### Automated test suite
+
+The complete suite runs with:
+
+```bash
+python -m pytest tests -q
+```
+
+The repository currently contains five test modules:
+
+| Test file | Main responsibility |
+|---|---|
+| `test_normalization.py` | Canonicalization and source-data invariants |
+| `test_loader.py` | Semantic coverage, runtime models and loading |
+| `test_selection.py` | Boundaries, precedence and related-product selection |
+| `test_relations.py` | Construction and storage rules for product relationships |
+| `test_api.py` | API contract, authentication, rate limits, errors and OpenAPI |
+
+The tests run against the **real versioned catalog and semantic artifacts** where that is important rather than replacing the complete domain with a synthetic test catalog.
+
+### Canonicalization tests
+
+`test_normalization.py` protects the deterministic source integration.
+
+Among other things, it verifies that:
+
+```text
+152 source rows
+        ↓
+150 canonical products
+```
+
+and that the two absorbed identifiers resolve to the intended canonical products.
+
+It also checks category normalization, availability and recipient normalization rules.
+
+These tests are especially important because the semantic layer is keyed to canonical identities.
+
+A normalization change can therefore affect far more than CSV presentation.
+
+### Loading and semantic coverage tests
+
+`test_loader.py` verifies the join between canonical source data and semantic data.
+
+The tests assert that:
+
+- 150 products load successfully;
+- every canonical product has semantic classification;
+- the semantic layer and runtime catalog contain the same identifiers;
+- controlled values remain inside their vocabularies;
+- runtime model shapes remain valid.
+
+This complements the standalone semantic validator with application-level loading checks.
+
+### Selection tests
+
+`test_selection.py` protects the deterministic recommendation mechanics.
+
+It tests the hard boundaries and the precedence hierarchy, including cases that are easy to implement incorrectly:
+
+- `in_stock` and `is_standalone_gift`;
+- the ±20% `target_price` band;
+- recipient behaviour;
+- `universal`;
+- missing rating values;
+- `gift_risk` with `buyer_knows_recipient`;
+- the strict levels used by `alternative_to`.
+
+The goal is not merely to test individual helper functions.
+
+It is to freeze the decision semantics that the conversational layer depends on.
+
+### Relationship tests
+
+`test_relations.py` validates relationship construction and persistence rules without freezing every model-generated neighbour forever.
+
+It protects invariants such as:
+
+- `pairs_with` retaining its semantic direction;
+- duplicate relationship entries being normalized;
+- contradictory bidirectional pairings being rejected;
+- `alternative_to` being stored once under the canonical ordering rule;
+- relation types remaining valid.
+
+The suite deliberately avoids asserting the entire LLM-produced relationship mesh.
+
+Two different reconstruction runs may choose different valid neighbours while still satisfying the same semantic criterion.
+
+The tests therefore protect **the rule**, not an arbitrary probabilistic snapshot.
+
+### API and security tests
+
+`test_api.py` exercises the deployed contract through FastAPI's `TestClient`.
+
+It covers, among other things:
+
+- missing and invalid credentials;
+- Catalog vs Diagnostics authorization;
+- 60/10 request rate limits;
+- public OpenAPI and Swagger;
+- absence of credentials from the published specification;
+- the five exposed operations;
+- parameter schemas and limits;
+- aliases and unresolved values;
+- `excluded` and `not_applied`;
+- recoverable `HTTP 200` errors;
+- technical `401`, `403`, `429` and `503` failures;
+- hidden diagnostics;
+- absence of framework `422` responses;
+- prevention of internal exception leakage;
+- exact-match vs related-product semantics.
+
+Test credentials are injected through environment variables in the tests rather than written into application code.
+
+### CI gate
+
+The relevant deployment sequence is:
+
+```text
+semantic construction if required
+        ↓
+relationship reconstruction if required
+        ↓
+semantic coverage gate
+        ↓
+pytest
+        ↓
+commit updated derived artifacts if any
+        ↓
+Fly deployment
+```
+
+Both validation and tests run even when a code or infrastructure change does not require another model-backed semantic reconstruction.
+
+That gives the pipeline an important property:
+
+> **A probabilistic construction step may produce the derived data, but only deterministic validation and tests decide whether that data is allowed to reach production.**
