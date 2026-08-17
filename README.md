@@ -3772,3 +3772,1102 @@ It is not free to redefine:
 - whether an unresolved criterion was actually applied.
 
 That division is what allows the system to combine conversational flexibility with stable catalog behaviour.
+
+---
+
+## API capabilities
+
+The Catalog Service exposes **five public catalog capabilities** through its OpenAPI contract.
+
+They are not five interchangeable ways of retrieving products. Each operation represents a different customer intention and has its own candidate universe, parameters, limits and response metadata.
+
+| Capability | Primary purpose | Maximum result size |
+|---|---|---:|
+| `get_categories` | Understand what sections the shop contains | All category summaries |
+| `get_products_by_category` | Browse one explicitly selected category | 8 per page |
+| `find_products_by_criteria` | Cross-category gift discovery | 8 |
+| `get_related_products` | Find complements or substitutes | 5 |
+| `get_product_details` | Inspect one identified product | 1 |
+
+All five public operations:
+
+- are read-only;
+- use the same canonical in-memory catalog;
+- are protected by the Catalog credential;
+- return typed Pydantic response models;
+- are published through the same OpenAPI specification;
+- share the same underlying product truth.
+
+They differ in **what question they answer**.
+
+```text
+"What kinds of things do you sell?"
+        ↓
+get_categories
+
+"Show me Kitchen & Dining."
+        ↓
+get_products_by_category
+
+"I need something for my sister, around €60, in three days."
+        ↓
+find_products_by_criteria
+
+"Do you have something similar to this?"
+        ↓
+get_related_products
+
+"Tell me more about this exact product."
+        ↓
+get_product_details
+```
+
+Choosing the correct capability is therefore part of the conversational architecture.
+
+The API itself does not attempt to infer which operation the customer intended. That decision belongs to indigo.ai.
+
+---
+
+## `get_categories`
+
+`get_categories` provides the map of the shop.
+
+```http
+GET /get_categories
+```
+
+It takes no catalog-search parameters.
+
+The operation returns a `CategorySummary` for every normalized category in the catalog.
+
+Each summary contains:
+
+```text
+name
+available_count
+price_min
+price_max
+```
+
+together with the response-level:
+
+```text
+currency = EUR
+```
+
+The current catalog resolves to **11 normalized categories**.
+
+The purpose of the operation is not to recommend products. It answers questions such as:
+
+> “What do you sell?”
+
+> “What sections are there?”
+
+> “What kinds of gifts can I browse?”
+
+---
+
+### Category existence and current availability are different concepts
+
+A category does not disappear from the shop map merely because its current available stock becomes zero.
+
+For that reason:
+
+```text
+category exists
+        ≠
+category currently has available products
+```
+
+A category can therefore be returned with:
+
+```text
+available_count = 0
+price_min = null
+price_max = null
+```
+
+The category map represents catalog structure; the availability count represents current inventory state.
+
+---
+
+### Price ranges describe available merchandise
+
+`price_min` and `price_max` are derived from currently available products in that category.
+
+Unavailable merchandise therefore does not distort the price range presented as currently purchasable.
+
+The operation performs this calculation over the catalog already loaded in memory; no additional source query is required.
+
+---
+
+### When the agent should use it
+
+`get_categories` is appropriate when the customer wants to understand the store before selecting a product.
+
+It is **not** the correct operation for:
+
+- a gift-discovery request;
+- searching by function;
+- satisfying a budget and delivery combination;
+- finding an alternative to a known product;
+- retrieving merchandise from one category.
+
+Once the customer chooses a section, the appropriate browsing operation becomes `get_products_by_category`.
+
+---
+
+## `get_products_by_category`
+
+`get_products_by_category` represents **catalog browsing**, not general gift discovery.
+
+```http
+GET /get_products_by_category
+```
+
+The required input is:
+
+```text
+category
+```
+
+The supported optional constraints are:
+
+```text
+max_price
+target_price
+min_price
+max_shipping_days
+```
+
+and the browsing controls are:
+
+```text
+sort
+limit
+offset
+```
+
+The result limit is:
+
+```text
+1 <= limit <= 8
+```
+
+with:
+
+```text
+default = 8
+```
+
+---
+
+### The category establishes the candidate universe
+
+This operation starts from:
+
+```text
+all products
+        ↓
+requested category
+        ↓
+products on that shelf
+```
+
+Only after that universe exists are the supported price, delivery and availability boundaries applied.
+
+This is fundamentally different from `find_products_by_criteria`.
+
+In category browsing:
+
+```text
+category
+=
+the shelf being browsed
+```
+
+In discovery:
+
+```text
+category
+=
+one possible relevance signal
+```
+
+The distinction is intentional.
+
+---
+
+### Browsing carries forward already-known purchase boundaries
+
+The operation supports price and delivery criteria because a customer may already have established those before asking to browse.
+
+For example:
+
+> “Show me Kitchen & Dining, but still keep it under €100 and within three days.”
+
+The category changes the browsing universe.
+
+It does not erase previously stated purchase boundaries.
+
+This is why the Indigo agent is instructed to carry known budget and delivery information into a category browse instead of silently browsing the entire shelf.
+
+---
+
+### `is_standalone_gift` does not cut browsing
+
+Browsing a category is not equivalent to asking:
+
+> “Which products here should be my main gift?”
+
+The customer asked to inspect what is available in a store section.
+
+For that reason, `get_products_by_category` deliberately calls the selection layer with:
+
+```text
+require_standalone_gift = false
+```
+
+Accessories and other non-standalone merchandise may therefore appear during explicit category browsing.
+
+`in_stock` still applies.
+
+---
+
+### Pagination
+
+`get_products_by_category` is the only paginated catalog operation.
+
+The response contains:
+
+```text
+results
+total
+offset
+currency
+```
+
+`total` means:
+
+> the number of products in the selected category satisfying the boundaries applied to this call **before** `limit` and `offset`.
+
+`offset` identifies where the current page starts.
+
+For example:
+
+```text
+total = 17
+offset = 8
+results = 8 products
+```
+
+means there are still matching products beyond the current page.
+
+This metadata allows the conversational agent to continue through the same browsed set instead of accidentally launching a different search.
+
+---
+
+### Browsing sort
+
+The operation has three explicit sorting modes:
+
+```text
+rating
+price_asc
+price_desc
+```
+
+with:
+
+```text
+rating
+```
+
+as the default.
+
+`price_asc` and `price_desc` support direct browsing questions such as:
+
+> “What is the cheapest thing in Kitchen & Dining?”
+
+The rating sort follows the service's rating/review cascade.
+
+This browsing sort is deliberately local to this operation.
+
+It does **not** modify the eight-level recommendation precedence used by `find_products_by_criteria` or `get_related_products`.
+
+---
+
+### Recoverable browsing errors
+
+Foreseeable invalid inputs do not become infrastructure failures.
+
+Examples include:
+
+```text
+unknown category
+invalid limit
+invalid offset
+```
+
+They return the recoverable API contract rather than pretending the catalog is unavailable.
+
+That distinction is explored in detail in the API contract section.
+
+---
+
+## `find_products_by_criteria`
+
+`find_products_by_criteria` is the main cross-category discovery operation.
+
+```http
+GET /find_products_by_criteria
+```
+
+It is designed for requests in which the customer describes **what the gift should achieve or satisfy**, rather than simply asking to browse one shelf.
+
+Examples include:
+
+> “Something for my sister who likes cooking.”
+
+> “Around €60 and here within three days.”
+
+> “Something useful for a colleague I don't know very well.”
+
+It accepts the richest criteria set of the five operations.
+
+---
+
+### Supported discovery criteria
+
+The operation currently accepts:
+
+| Dimension | Criteria |
+|---|---|
+| Price | `max_price`, `target_price`, `min_price` |
+| Recipient context | `recipient`, `relationship`, `buyer_knows_recipient` |
+| Gift context | `occasion` |
+| Semantic intent | `use_case`, `functional_family`, `product_type` |
+| Commercial taxonomy | `category`, `subcategory` |
+| Physical attributes | `brand`, `color`, `material` |
+| Purchase conditions | `max_shipping_days`, `gift_wrap_required` |
+| Post-selection role | `stocking_filler` |
+| Response size | `limit` |
+
+Not every criterion has to be known.
+
+The API can search using whatever valid combination it receives.
+
+The requirement that the normal Indigo discovery workflow waits for price and delivery is an **orchestration rule**, not an inability of the Catalog Service to process other combinations.
+
+That separation matters: the API remains a reusable catalog capability, while the conversational workflow defines what information is required before it decides to call it.
+
+---
+
+### Result limit
+
+The operation accepts:
+
+```text
+1 <= limit <= 8
+```
+
+with an API default of:
+
+```text
+8
+```
+
+The Indigo orchestration adds its own conversational policy:
+
+```text
+first discovery search → 8
+later discovery search → 5
+```
+
+The backend therefore owns the valid range; Indigo owns how much of that range to use during a conversation.
+
+---
+
+### Search execution
+
+The internal search path is:
+
+```text
+request criteria
+        ↓
+normalize / resolve criteria
+        ↓
+exact product_type restriction when applicable
+        ↓
+selection boundaries
+        ↓
+eight-level precedence
+        ↓
+limit
+        ↓
+results
+```
+
+The response can additionally preserve relevant failures and unresolved inputs:
+
+```text
+excluded
+not_applied
+```
+
+---
+
+### Response
+
+A successful discovery response has the form:
+
+```text
+results
+query_understood
+excluded        # omitted when empty
+not_applied     # omitted when empty
+currency
+```
+
+`results` contains complete `Product` objects.
+
+No detail call is required to obtain the normal product data used in a recommendation.
+
+---
+
+### `query_understood`
+
+`query_understood` is not simply an echo of the incoming request.
+
+It describes what the service actually normalized and applied.
+
+For instance:
+
+```text
+incoming:
+product_type = "gyuto"
+
+resolved:
+product_type = "chef_knife"
+
+query_understood:
+product_type = "chef_knife"
+```
+
+This lets the conversational agent reason from the backend's interpretation rather than assuming that every string it originally sent was applied literally.
+
+---
+
+### `not_applied`
+
+When the service can continue safely without one unresolved criterion, that criterion can travel through `not_applied`.
+
+Current examples include unresolved:
+
+```text
+product_type
+color
+material
+```
+
+in the discovery operation.
+
+The rest of the valid query is still executed.
+
+The agent can therefore say:
+
+> “I could apply the budget and delivery requirement, but I couldn't match that material reliably.”
+
+instead of either failing the whole search or falsely claiming that the returned products match the unresolved material.
+
+---
+
+### `excluded`
+
+`excluded` preserves relevant products that failed a supported boundary in cases where knowing they exist matters.
+
+Current discovery behaviour includes:
+
+- up to two relevant over-budget candidates;
+- the exact out-of-stock product in the specific single-product exact-match case.
+
+An excluded product is never a valid recommendation.
+
+Its purpose is explanatory.
+
+---
+
+### Conflicting price boundaries
+
+The API detects a contradictory range such as:
+
+```text
+min_price = 100
+max_price = 50
+```
+
+before attempting discovery.
+
+It returns:
+
+```text
+error_type = conflicting_parameters
+```
+
+rather than producing an arbitrary empty catalog result.
+
+An impossible request and a legitimate zero-result search are different states.
+
+---
+
+## The workflow-facing `POST /find_products_by_criteria`
+
+The public OpenAPI capability is the `GET` operation described above.
+
+The service also implements:
+
+```http
+POST /find_products_by_criteria
+```
+
+but deliberately sets:
+
+```text
+include_in_schema = false
+```
+
+so it is **not exposed as a second capability to indigo.ai's imported OpenAPI integration**.
+
+This route exists for the **Find Products by Criteria Workflow**.
+
+The workflow already owns a structured object:
+
+```text
+criteria_map
+```
+
+so sending that object as a JSON body is operationally simpler and safer than dynamically constructing a long query string inside the workflow.
+
+The request shape is:
+
+```text
+POST /find_products_by_criteria?limit=<limit>
+
+body:
+criteria_map
+```
+
+---
+
+### The POST route does not implement another search engine
+
+This is an important architectural detail.
+
+The POST route:
+
+1. checks that every key in `criteria_map` is a declared supported criterion;
+2. validates every value using the same types used by the public API;
+3. returns `invalid_parameter` for unknown or invalid values;
+4. delegates the validated values to the same `find_products_by_criteria(...)` implementation.
+
+Therefore:
+
+```text
+public GET
+        │
+        ├──────────────┐
+        │              │
+workflow POST          │
+        │              │
+        └──────┬───────┘
+               ↓
+same discovery implementation
+               ↓
+same selection.py
+```
+
+There is only one catalog discovery behaviour.
+
+The second transport shape exists to fit the workflow boundary, not to duplicate business logic.
+
+---
+
+## `get_related_products`
+
+`get_related_products` answers a different question:
+
+> “Given a product or sufficiently described product concept, what complements or substitutes it?”
+
+```http
+GET /get_related_products
+```
+
+The required parameter is:
+
+```text
+relation
+```
+
+with the values:
+
+```text
+pairs_with
+alternative_to
+```
+
+The operation supports:
+
+```text
+1 <= limit <= 5
+```
+
+with:
+
+```text
+default = 3
+```
+
+It can also receive the shared semantic and purchase criteria needed to constrain or order the related candidates.
+
+---
+
+### `pairs_with`
+
+`pairs_with` means:
+
+> find a concrete complement to an identified product.
+
+It requires:
+
+```text
+product_id
+```
+
+Without a source product, there is no defined object to complement.
+
+The service therefore returns:
+
+```text
+error_type = missing_anchor
+relation = pairs_with
+```
+
+rather than inventing a generic complement search.
+
+The explicit relationship universe is then processed through:
+
+```text
+pairs_with candidates
+        ↓
+boundaries
+        ↓
+normal precedence
+        ↓
+limit
+```
+
+---
+
+### `alternative_to`
+
+`alternative_to` means:
+
+> find something that can substitute for the product or product concept.
+
+This operation is more flexible.
+
+It can start from:
+
+```text
+product_id
+```
+
+or, without a concrete product, from enough semantic information to describe what is being replaced.
+
+Examples of valid conceptual anchors include:
+
+```text
+product_type
+functional_family
+```
+
+and other meaningful discovery context.
+
+Price and delivery alone do not form a product concept.
+
+Therefore:
+
+```text
+max_price = 100
+max_shipping_days = 3
+```
+
+without a product or semantic intention returns:
+
+```text
+missing_anchor
+```
+
+rather than treating “something below €100” as an alternative relationship.
+
+---
+
+### Candidate levels
+
+With a concrete product, alternative candidates are walked in this order:
+
+```text
+1. explicit alternative_to
+2. same product_type
+3. shared functional_family
+```
+
+Each level is exhausted before a lower level can fill the remaining response positions.
+
+Inside each level, the normal deterministic boundaries and precedence apply.
+
+This means relationship strength and recommendation relevance remain separate concepts.
+
+---
+
+### Shared constraints remain meaningful
+
+An alternative can still be required to satisfy:
+
+```text
+max_price
+min_price
+target_price
+max_shipping_days
+gift_wrap_required
+```
+
+and other supported contextual criteria.
+
+Those parameters constrain which related product is acceptable.
+
+They do not define the relation itself.
+
+---
+
+### Response
+
+The related-products response can contain:
+
+```text
+results
+query_understood
+excluded
+currency
+```
+
+`query_understood` is especially useful when there was no concrete `product_id` and the relation search began from a semantic intention.
+
+Each result is a `RelatedProduct`, which is the complete `Product` shape plus:
+
+```text
+relation_type
+```
+
+where applicable.
+
+---
+
+### `relation_type`
+
+For an `alternative_to` result:
+
+```text
+equivalent
+```
+
+is preserved only when that stronger relation was explicitly established in the semantic layer.
+
+Otherwise derived substitution paths use:
+
+```text
+same_function
+```
+
+This prevents the API from describing two products as equivalent merely because runtime discovered that they can perform a similar function.
+
+---
+
+### `excluded` in related searches
+
+A related product that is relevant but over the declared maximum price can also be returned through `excluded`.
+
+The same global cap of:
+
+```text
+2
+```
+
+applies.
+
+Again, excluded products explain a failed boundary; they do not become valid related recommendations.
+
+---
+
+### Recoverable relation errors
+
+Examples include:
+
+```text
+product_not_found
+missing_anchor
+invalid_parameter
+```
+
+An unknown `product_id`, for example, is not treated as a technical service failure.
+
+The request was understood; the referenced product simply does not exist in the catalog.
+
+---
+
+## `get_product_details`
+
+`get_product_details` is the narrowest operation.
+
+```http
+GET /get_product_details
+```
+
+It requires:
+
+```text
+product_id
+```
+
+and returns:
+
+```text
+result
+currency
+```
+
+where `result` is one complete `Product`.
+
+---
+
+### It is a direct lookup, not an enrichment call
+
+Every product-returning discovery capability already uses the complete `Product` schema.
+
+Therefore this operation should **not** be called merely because the agent wants information that was already present in a discovery result.
+
+Its intended use is when the customer has identified a specific product and wants to inspect it directly.
+
+For example:
+
+> “Tell me more about the second one.”
+
+Once the conversational layer has resolved which product “the second one” refers to, `get_product_details` can retrieve that product if a fresh direct lookup is actually required.
+
+---
+
+### Direct lookup can expose unavailable products
+
+Normal discovery removes unavailable merchandise.
+
+A direct lookup is different.
+
+The customer may explicitly ask about a known item that is currently unavailable.
+
+`get_product_details` can therefore return:
+
+```text
+in_stock = false
+```
+
+instead of pretending the item does not exist.
+
+That preserves the distinction between product existence and recommendation eligibility.
+
+---
+
+### Unknown product
+
+If the identifier cannot be resolved, the API returns:
+
+```text
+error_type = product_not_found
+```
+
+as a recoverable response.
+
+This does not become a 404 transport failure because it is an expected catalog-level outcome the conversational layer knows how to handle.
+
+---
+
+## Capability boundaries matter
+
+The five operations deliberately overlap in the product data they can return, but **not in their semantics**.
+
+A simple decision view is:
+
+```text
+Does the customer want the shop map?
+        ↓ yes
+get_categories
+
+Did they explicitly choose a category to browse?
+        ↓ yes
+get_products_by_category
+
+Are they describing the gift they need?
+        ↓ yes
+find_products_by_criteria
+
+Are they asking for a complement or substitute?
+        ↓ yes
+get_related_products
+
+Are they asking about one identified product?
+        ↓ yes
+get_product_details
+```
+
+This separation keeps the API understandable both to normal software consumers and to an LLM tool consumer.
+
+A single giant endpoint could technically accept every possible intention, but it would force the agent and backend to infer what each parameter means in every context.
+
+Instead, the operation itself supplies part of the meaning.
+
+---
+
+## Shared criteria are defined once
+
+Criteria that appear in more than one operation are defined once in `api.py` and reused.
+
+Examples include:
+
+```text
+MaxPrice
+MinPrice
+TargetPrice
+MaxShippingDays
+ProductType
+UseCaseCriterion
+FunctionalFamilyCriterion
+Recipient
+Relationship
+GiftWrapRequired
+BuyerKnowsRecipient
+```
+
+This prevents the same concept from acquiring subtly different schemas or descriptions depending on which API operation happens to use it.
+
+The OpenAPI consumer therefore reads one consistent definition of concepts such as:
+
+```text
+target_price
+functional_family
+buyer_knows_recipient
+```
+
+across capabilities.
+
+---
+
+## Capability descriptions are part of agent behaviour
+
+The descriptions attached to operations and parameters are not decorative API documentation.
+
+indigo.ai imports the OpenAPI specification and exposes those operations to the Product Discovery Agent.
+
+The model therefore reads descriptions such as:
+
+- when an operation should be used;
+- what a criterion means;
+- which parameters are boundaries;
+- what `product_type` represents;
+- whether several semantic values accumulate or act as alternatives;
+- what `excluded` means;
+- what `not_applied` means.
+
+The contract itself is consequently one layer of the agent's tool-selection system.
+
+This was a deliberate design decision:
+
+> **The backend should not merely expose valid HTTP endpoints; it should expose a contract that makes correct tool use legible to the conversational model.**
+
+---
+
+## Response-size control
+
+The API also constrains how much product data can travel in one call.
+
+The declared operation limits are:
+
+```text
+get_products_by_category
+default 8 · maximum 8
+
+find_products_by_criteria
+default 8 · maximum 8
+
+get_related_products
+default 3 · maximum 5
+
+get_product_details
+exactly 1
+```
+
+The absolute merchandise-list maximum is therefore:
+
+```text
+8 products
+```
+
+This matters because each product intentionally carries the full customer-relevant product representation.
+
+Bounding the number of products bounds:
+
+- response payload;
+- conversational context consumption;
+- token cost;
+- the number of alternatives the customer has to evaluate.
+
+The API does not solve context cost by stripping useful product information from each result. It controls the number of complete results instead.
+
+---
+
+## Public API surface vs operator surface
+
+The five catalog capabilities are the API surface imported by indigo.ai.
+
+The service also has an operator endpoint:
+
+```http
+GET /_diagnostics/load-report
+```
+
+but it is deliberately:
+
+```text
+include_in_schema = false
+```
+
+and therefore absent from the public OpenAPI capability set.
+
+It uses the separate Diagnostics credential and exists for service inspection rather than customer conversation.
+
+Similarly, the workflow-facing POST version of `find_products_by_criteria` is hidden from the specification.
+
+This means the OpenAPI surface seen by the conversational agent is intentionally narrower than the complete set of HTTP routes implemented by the service.
+
+```text
+HTTP service
+        │
+        ├── public OpenAPI catalog capabilities
+        │      5 operations
+        │
+        ├── workflow transport route
+        │      hidden POST find_products_by_criteria
+        │
+        └── operator diagnostics
+               hidden from OpenAPI
+```
+
+That is part of the boundary design, not an accidental omission.
