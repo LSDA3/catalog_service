@@ -19,6 +19,36 @@ The service is containerized with Docker, deployed on Fly.io and exposed through
 - OpenAPI: `https://indigo-catalog-service.fly.dev/openapi.json`
 - Swagger UI: `https://indigo-catalog-service.fly.dev/docs`
 
+## Contents
+
+### Overview
+- [The problem](#the-problem)
+- [The solution](#the-solution)
+- [Architecture](#architecture)
+
+### Catalog and discovery
+- [Data lifecycle](#data-lifecycle)
+- [Data model and semantic layer](#data-model-and-semantic-layer)
+- [Discovery and selection logic](#discovery-and-selection-logic)
+- [API capabilities](#api-capabilities)
+- [API contract and response design](#api-contract-and-response-design)
+
+### Conversational system
+- [Agent orchestration in indigo.ai](#agent-orchestration-in-indigoai)
+
+### Engineering and operations
+- [Project structure](#project-structure)
+- [Running locally](#running-locally)
+- [Configuration and security](#configuration-and-security)
+- [Testing and validation](#testing-and-validation)
+- [CI/CD and semantic pipeline](#cicd-and-semantic-pipeline)
+- [Deployment](#deployment)
+
+### Engineering rationale
+- [Key design decisions](#key-design-decisions)
+- [Performance and scalability](#performance-and-scalability)
+- [Known limitations](#known-limitations)
+
 ---
 
 ## The problem
@@ -1333,7 +1363,7 @@ It is part of the application data model.
 
 ---
 
-## 2. Process startup
+### 2. Process startup
 
 The second lifecycle moment begins when the deployed Docker container starts.
 
@@ -1498,7 +1528,7 @@ No database migration, vector index construction or model warm-up is required.
 
 ---
 
-## 3. Request time
+### 3. Request time
 
 The third lifecycle moment is deliberately the simplest.
 
@@ -1577,7 +1607,7 @@ For those reasons, semantic construction happens **before deployment**, while de
 
 ---
 
-## The lifecycle invariant
+### The lifecycle invariant
 
 The complete design can be summarized as:
 
@@ -1797,7 +1827,7 @@ This allows the system to use recipient information without reproducing the sour
 
 ---
 
-## The semantic layer
+### The semantic layer
 
 The canonical catalog still describes **what the products are factually**.
 
@@ -2124,7 +2154,7 @@ Because the field is explicit, this does not require the conversational model to
 
 ---
 
-## Product relationships
+### Product relationships
 
 The remaining semantic fields describe **relationships between products rather than properties of one product in isolation**.
 
@@ -2275,7 +2305,7 @@ This follows the same principle used elsewhere in the system: the project avoids
 
 ---
 
-## Controlled vocabularies
+### Controlled vocabularies
 
 `data/vocabularies.yaml` is the semantic dictionary shared across construction and runtime.
 
@@ -2319,7 +2349,7 @@ The construction model and the conversational model therefore do not receive two
 
 ---
 
-## Definitions are part of the contract
+### Definitions are part of the contract
 
 A controlled label without its meaning would not be enough.
 
@@ -2351,7 +2381,7 @@ The system is not relying on the same label accidentally meaning the same thing 
 
 ---
 
-## The runtime `Product` model
+### The runtime `Product` model
 
 After canonical source data and semantic data are joined, the public runtime representation is the Pydantic `Product` model.
 
@@ -2374,7 +2404,7 @@ That is why `get_product_details` is reserved for a customer asking specifically
 
 ---
 
-## What deliberately does not travel in `Product`
+### What deliberately does not travel in `Product`
 
 Four runtime fields remain outside the public `Product` contract:
 
@@ -2401,7 +2431,7 @@ It exposes the information that belongs in the product-discovery contract.
 
 ---
 
-## Other public shapes
+### Other public shapes
 
 `Product` is not the only shape in the data model.
 
@@ -2485,7 +2515,7 @@ It only has meaning relative to the product from which the related search starte
 
 ---
 
-## One response model per operation
+### One response model per operation
 
 The service deliberately does not use a universal response envelope.
 
@@ -2516,7 +2546,7 @@ Separate response models encode those distinctions directly into the contract.
 
 ---
 
-## Why the semantic layer exists
+### Why the semantic layer exists
 
 The semantic layer is not an attempt to create a richer product database for its own sake.
 
@@ -2698,7 +2728,7 @@ and:
 
 ---
 
-## 2. Selection boundaries
+### 2. Selection boundaries
 
 After the applicable candidate universe has been established, `take_what_qualifies(...)` decides which products are allowed to remain.
 
@@ -2767,7 +2797,7 @@ That is precisely the path where products such as a refill, case or accessory ca
 
 ---
 
-## Price semantics
+### Price semantics
 
 The service supports three different forms of price intent:
 
@@ -2859,7 +2889,7 @@ Again, unknown is not silently converted into zero.
 
 ---
 
-## Delivery
+### Delivery
 
 `max_shipping_days` is a hard boundary.
 
@@ -2877,7 +2907,7 @@ This is one of the reasons price and delivery are treated specially in the conve
 
 ---
 
-## Gift wrapping
+### Gift wrapping
 
 `gift_wrap_required` is activated only when the customer actually requires gift wrapping.
 
@@ -2895,7 +2925,7 @@ The contract therefore preserves absence as its own state.
 
 ---
 
-## Brand, color and material
+### Brand, color and material
 
 These attributes can become boundaries when the customer states them.
 
@@ -2922,7 +2952,7 @@ The returned products must therefore never be described as satisfying that unres
 
 ---
 
-## `stocking_filler`
+### `stocking_filler`
 
 `stocking_filler` has intentionally asymmetric behaviour.
 
@@ -2952,7 +2982,7 @@ It turns on a defined selection mechanic.
 
 ---
 
-## Recipient behaviour
+### Recipient behaviour
 
 `recipient` combines deterministic normalization with two different forms of selection behaviour.
 
@@ -2986,7 +3016,7 @@ The service does not infer gender specificity from the product name or from the 
 
 ---
 
-## Criteria that order but do not cut
+### Criteria that order but do not cut
 
 Several pieces of information matter strongly to recommendation relevance but are deliberately **not hard boundaries** in normal discovery.
 
@@ -3019,7 +3049,7 @@ A user saying that the gift is for a housewarming, for example, should strongly 
 
 ---
 
-# 3. Precedence ordering
+### 3. Precedence ordering
 
 Once invalid products have been removed, the service orders the surviving set using **eight precedence levels**.
 
@@ -3069,7 +3099,7 @@ Each level has its own semantics.
 
 ---
 
-## Level 1 — `functional_family` and `use_case`
+### Level 1 — `functional_family` and `use_case`
 
 The first level asks whether the product matches the customer's **functional need and usage situation**.
 
@@ -3135,7 +3165,7 @@ When no specific `use_case` is supplied, `universal` acts as the preferred tie-b
 
 ---
 
-## Level 2 — occasion
+### Level 2 — occasion
 
 Products whose `occasion` intersects with the requested occasion come before products that do not.
 
@@ -3145,7 +3175,7 @@ A product with no explicit occasion match can still survive if it satisfies all 
 
 ---
 
-## Level 3 — category and subcategory
+### Level 3 — category and subcategory
 
 Commercial taxonomy enters after function, use and occasion.
 
@@ -3168,7 +3198,7 @@ Those are different operations with intentionally different semantics.
 
 ---
 
-## Level 4 — recipient
+### Level 4 — recipient
 
 Recipient relevance is then considered.
 
@@ -3182,7 +3212,7 @@ This prevents recipient metadata from becoming a broad exclusion mechanism while
 
 ---
 
-## Level 5 — relationship
+### Level 5 — relationship
 
 If the customer provides the relationship between buyer and recipient, products whose `suitable_relationships` contains that value come first.
 
@@ -3202,7 +3232,7 @@ This reflects what `suitable_relationships` means in the semantic layer: recomme
 
 ---
 
-## Level 6 — rating and review count
+### Level 6 — rating and review count
 
 Commercial evidence enters only after the more meaningful semantic criteria above it.
 
@@ -3248,7 +3278,7 @@ Missing values remain missing and are not converted to zero for the comparison.
 
 ---
 
-## Level 7 — `gift_risk`
+### Level 7 — `gift_risk`
 
 Unless the buyer has explicitly indicated that they know the recipient well, lower gift risk is preferred:
 
@@ -3278,7 +3308,7 @@ Absent and `false` preserve the precaution.
 
 ---
 
-## Level 8 — `description_quality`
+### Level 8 — `description_quality`
 
 The final semantic level prefers products whose description is sufficiently informative:
 
@@ -3296,7 +3326,7 @@ This is a good example of an internal field whose purpose is operational rather 
 
 ---
 
-## Stable ties
+### Stable ties
 
 If two products remain tied after all eight levels, the service uses:
 
@@ -3316,7 +3346,7 @@ Otherwise products that were semantically identical under the declared criteria 
 
 ---
 
-# No numeric product score
+### No numeric product score
 
 The resulting ordering key is technically a sequence of comparable values, but it is not a recommendation score.
 
@@ -3356,7 +3386,7 @@ The ordering therefore remains explainable in terms of the declared decision hie
 
 ---
 
-# `excluded`: preserving relevant failures
+### `excluded`: preserving relevant failures
 
 Products that fail a boundary are normally removed from `results`.
 
@@ -3368,7 +3398,7 @@ It is deliberately small and does not behave as a second recommendation list.
 
 ---
 
-## Over-budget candidates
+### Over-budget candidates
 
 When `max_price` is present, the service can return up to:
 
@@ -3420,7 +3450,7 @@ instead of incorrectly claiming that the product does not exist.
 
 ---
 
-## Exact out-of-stock case
+### Exact out-of-stock case
 
 There is also a specific exact-object case.
 
@@ -3451,7 +3481,7 @@ the product exists but cannot currently be recommended
 
 ---
 
-# `not_applied`: preserving unresolved criteria
+### `not_applied`: preserving unresolved criteria
 
 `not_applied` solves a different information-loss problem.
 
@@ -3485,7 +3515,7 @@ The conversational agent can tell exactly which claims it is entitled to make ab
 
 ---
 
-# `query_understood`
+### `query_understood`
 
 `query_understood` is the normalized representation of the criteria that the service actually understood and applied.
 
@@ -3508,7 +3538,7 @@ This gives the conversational layer a machine-readable account of **what the sea
 
 ---
 
-# Related-product selection reuses the same mechanics
+### Related-product selection reuses the same mechanics
 
 `get_related_products` does not contain a second recommendation-ranking system.
 
@@ -3528,7 +3558,7 @@ alternative_to
 
 ---
 
-## `pairs_with`
+### `pairs_with`
 
 A complement search requires a concrete `product_id`.
 
@@ -3558,7 +3588,7 @@ Everything else, including `in_stock`, continues to apply.
 
 ---
 
-## `alternative_to`
+### `alternative_to`
 
 Alternative search is broader.
 
@@ -3655,7 +3685,7 @@ The same field participates differently because the operation itself has differe
 
 ---
 
-## `relation_type`
+### `relation_type`
 
 For `alternative_to`, each returned `RelatedProduct` can declare the nature of the relation.
 
@@ -3677,7 +3707,7 @@ This preserves the stronger `equivalent` meaning only where that stronger relati
 
 ---
 
-## `excluded` also works inside related-product search
+### `excluded` also works inside related-product search
 
 When `max_price` is supplied to `get_related_products`, over-budget related candidates can also be preserved through `excluded`.
 
@@ -3692,7 +3722,7 @@ This allows an alternative or complement conversation to remain truthful about a
 
 ---
 
-# Browsing is deliberately different from discovery
+### Browsing is deliberately different from discovery
 
 `get_products_by_category` does not use the full discovery semantics.
 
@@ -3736,7 +3766,7 @@ from silently changing how future gift recommendations are ranked.
 
 ---
 
-# Determinism and conversational flexibility
+### Determinism and conversational flexibility
 
 The complete discovery boundary can therefore be expressed as:
 
@@ -3828,7 +3858,7 @@ The API itself does not attempt to infer which operation the customer intended. 
 
 ---
 
-## `get_categories`
+### `get_categories`
 
 `get_categories` provides the map of the shop.
 
@@ -3917,7 +3947,7 @@ Once the customer chooses a section, the appropriate browsing operation becomes 
 
 ---
 
-## `get_products_by_category`
+### `get_products_by_category`
 
 `get_products_by_category` represents **catalog browsing**, not general gift discovery.
 
@@ -4115,7 +4145,7 @@ That distinction is explored in detail in the API contract section.
 
 ---
 
-## `find_products_by_criteria`
+### `find_products_by_criteria`
 
 `find_products_by_criteria` is the main cross-category discovery operation.
 
@@ -4320,7 +4350,7 @@ An impossible request and a legitimate zero-result search are different states.
 
 ---
 
-## The workflow-facing `POST /find_products_by_criteria`
+### The workflow-facing `POST /find_products_by_criteria`
 
 The public OpenAPI capability is the `GET` operation described above.
 
@@ -4392,7 +4422,7 @@ The second transport shape exists to fit the workflow boundary, not to duplicate
 
 ---
 
-## `get_related_products`
+### `get_related_products`
 
 `get_related_products` answers a different question:
 
@@ -4625,7 +4655,7 @@ The request was understood; the referenced product simply does not exist in the 
 
 ---
 
-## `get_product_details`
+### `get_product_details`
 
 `get_product_details` is the narrowest operation.
 
@@ -4700,7 +4730,7 @@ This does not become a 404 transport failure because it is an expected catalog-l
 
 ---
 
-## Capability boundaries matter
+### Capability boundaries matter
 
 The five operations deliberately overlap in the product data they can return, but **not in their semantics**.
 
@@ -4736,7 +4766,7 @@ Instead, the operation itself supplies part of the meaning.
 
 ---
 
-## Shared criteria are defined once
+### Shared criteria are defined once
 
 Criteria that appear in more than one operation are defined once in `api.py` and reused.
 
@@ -4770,7 +4800,7 @@ across capabilities.
 
 ---
 
-## Capability descriptions are part of agent behaviour
+### Capability descriptions are part of agent behaviour
 
 The descriptions attached to operations and parameters are not decorative API documentation.
 
@@ -4794,7 +4824,7 @@ This was a deliberate design decision:
 
 ---
 
-## Response-size control
+### Response-size control
 
 The API also constrains how much product data can travel in one call.
 
@@ -4833,7 +4863,7 @@ The API does not solve context cost by stripping useful product information from
 
 ---
 
-## Public API surface vs operator surface
+### Public API surface vs operator surface
 
 The five catalog capabilities are the API surface imported by indigo.ai.
 
@@ -4904,7 +4934,7 @@ The design principle is:
 
 ---
 
-## Pydantic is the contract source
+### Pydantic is the contract source
 
 `src/models.py` defines the public response shapes.
 
@@ -4940,7 +4970,7 @@ The same typed models used to serialize production responses define the contract
 
 ---
 
-## One product shape
+### One product shape
 
 The central merchandise representation is:
 
@@ -4983,7 +5013,7 @@ This avoids an unnecessary N+1 interaction pattern between the conversational la
 
 ---
 
-## Complete does not mean unrestricted
+### Complete does not mean unrestricted
 
 The public `Product` is complete **for the product-discovery contract**, not a dump of every backend field.
 
@@ -5019,7 +5049,7 @@ The absence of those fields is part of the schema design, not accidental data lo
 
 ---
 
-## Closed vocabularies become real OpenAPI enums
+### Closed vocabularies become real OpenAPI enums
 
 The controlled semantic vocabularies do not remain hidden inside the classification pipeline.
 
@@ -5060,7 +5090,7 @@ The same controlled values travel across construction, validation and runtime co
 
 ---
 
-## Definitions travel with the vocabulary
+### Definitions travel with the vocabulary
 
 The values alone are not enough.
 
@@ -5090,7 +5120,7 @@ That is particularly important for semantic fields whose names are compact repre
 
 ---
 
-## `product_type` is the deliberate exception
+### `product_type` is the deliberate exception
 
 `product_type` does not become an OpenAPI enum.
 
@@ -5120,7 +5150,7 @@ This is controlled openness, not unvalidated semantics.
 
 ---
 
-# Specialized response shapes
+### Specialized response shapes
 
 Not every product-related concept should use the full `Product` model.
 
@@ -5128,7 +5158,7 @@ The service defines narrower shapes when giving the agent less information commu
 
 ---
 
-## `ExcludedProduct`
+### `ExcludedProduct`
 
 An excluded product is not a recommendation.
 
@@ -5168,7 +5198,7 @@ This is semantic payload design: the amount of information communicates the role
 
 ---
 
-## `CategorySummary`
+### `CategorySummary`
 
 A category is not represented as a bare string.
 
@@ -5192,7 +5222,7 @@ The schema can express that directly.
 
 ---
 
-## `RelatedProduct`
+### `RelatedProduct`
 
 A related result is a normal `Product` plus contextual relation information.
 
@@ -5227,7 +5257,7 @@ The schema therefore stores that meaning at the point where a relation context a
 
 ---
 
-## `NotApplied`
+### `NotApplied`
 
 `NotApplied` represents a failure to apply part of the **input**, not a failure of a product.
 
@@ -5258,7 +5288,7 @@ That would remove information the agent needs to avoid making false claims.
 
 ---
 
-# One envelope per operation
+### One envelope per operation
 
 The service deliberately does **not** use one universal response envelope.
 
@@ -5312,7 +5342,7 @@ The current design instead allows the operation itself to define which metadata 
 
 ---
 
-## `GetCategoriesResponse`
+### `GetCategoriesResponse`
 
 ```text
 results
@@ -5334,7 +5364,7 @@ to interpret.
 
 ---
 
-## `GetProductsByCategoryResponse`
+### `GetProductsByCategoryResponse`
 
 ```text
 results
@@ -5349,7 +5379,7 @@ It does not expose semantic-discovery metadata because category browsing has dif
 
 ---
 
-## `FindProductsByCriteriaResponse`
+### `FindProductsByCriteriaResponse`
 
 ```text
 results
@@ -5379,7 +5409,7 @@ There is no numeric score field.
 
 ---
 
-## `GetRelatedProductsResponse`
+### `GetRelatedProductsResponse`
 
 ```text
 results
@@ -5396,7 +5426,7 @@ A related-product operation has its own recoverable request behaviours instead o
 
 ---
 
-## `GetProductDetailsResponse`
+### `GetProductDetailsResponse`
 
 The single-product lookup uses:
 
@@ -5419,7 +5449,7 @@ The schema communicates that cardinality directly.
 
 ---
 
-# Currency travels at response level
+### Currency travels at response level
 
 All merchandise responses use:
 
@@ -5447,7 +5477,7 @@ For an operation returning eight complete products, this avoids repeating identi
 
 ---
 
-# Optional and absent are not always the same thing
+### Optional and absent are not always the same thing
 
 The contract preserves meaningful absence.
 
@@ -5489,7 +5519,7 @@ The distinction is implemented at the operation boundary rather than by globally
 
 ---
 
-# Recoverable request problems are content
+### Recoverable request problems are content
 
 One of the most important contract decisions is the separation between:
 
@@ -5530,7 +5560,7 @@ rather than a transport-level error.
 
 ---
 
-## `RecoverableError`
+### `RecoverableError`
 
 Its complete shape is:
 
@@ -5576,7 +5606,7 @@ That is especially useful in Indigo because a recoverable result can continue th
 
 ---
 
-## Why `product_not_found` is recoverable
+### Why `product_not_found` is recoverable
 
 An unknown identifier does not mean the Catalog Service failed.
 
@@ -5598,7 +5628,7 @@ The next action is to correct the request or continue the conversation, not to r
 
 ---
 
-# Automatic FastAPI validation is converted into the recoverable contract
+### Automatic FastAPI validation is converted into the recoverable contract
 
 FastAPI would ordinarily return a `422` response for many request-validation failures.
 
@@ -5637,7 +5667,7 @@ The published contract therefore matches the behaviour of the application rather
 
 ---
 
-# Technical failures use a different vocabulary
+### Technical failures use a different vocabulary
 
 Actual service-level failures use:
 
@@ -5666,7 +5696,7 @@ They use non-2xx status codes.
 
 ---
 
-## Technical HTTP statuses
+### Technical HTTP statuses
 
 The public contract currently distinguishes:
 
@@ -5689,7 +5719,7 @@ That identifier has no product or customer meaning and should not be shown as pa
 
 ---
 
-## `retryable` is explicit
+### `retryable` is explicit
 
 A technical failure also declares whether repeating the same request can reasonably succeed without changing the customer's criteria.
 
@@ -5711,7 +5741,7 @@ It exists explicitly in the response schema.
 
 ---
 
-# Recoverable and technical failures cannot be confused
+### Recoverable and technical failures cannot be confused
 
 The contract intentionally uses two different discriminator names:
 
@@ -5771,7 +5801,7 @@ instead of collapsing them into one generic “error”.
 
 ---
 
-# The OpenAPI specification is curated
+### The OpenAPI specification is curated
 
 FastAPI generates the base specification, but the service does not publish it completely untouched.
 
@@ -5795,7 +5825,7 @@ The resulting OpenAPI document therefore describes **the application's intended 
 
 ---
 
-# Hidden routes stay outside the agent contract
+### Hidden routes stay outside the agent contract
 
 The complete HTTP application contains routes that are deliberately absent from OpenAPI.
 
@@ -5832,7 +5862,7 @@ Only routes intentionally published in OpenAPI become part of the catalog capabi
 
 ---
 
-# Operation names are stable tool names
+### Operation names are stable tool names
 
 Each public route sets its `operation_id` explicitly to the same canonical capability name:
 
@@ -5854,7 +5884,7 @@ The code treats those names as part of the contract.
 
 ---
 
-# Parameter descriptions carry operational semantics
+### Parameter descriptions carry operational semantics
 
 The API does not rely only on parameter names.
 
@@ -5891,7 +5921,7 @@ The description is therefore part of executable agent guidance.
 
 ---
 
-# Multivalue criteria are typed as multivalue criteria
+### Multivalue criteria are typed as multivalue criteria
 
 The API contract represents:
 
@@ -5923,7 +5953,7 @@ The schema and selection implementation therefore express the same semantics.
 
 ---
 
-# Structural meaning is preferred over prose conventions
+### Structural meaning is preferred over prose conventions
 
 Several contract decisions follow the same pattern:
 
@@ -5965,7 +5995,7 @@ This makes the contract more reliable for machine consumption.
 
 ---
 
-# No score travels
+### No score travels
 
 There is no field such as:
 
@@ -6004,7 +6034,7 @@ Ordering is behaviour, not extra product metadata.
 
 ---
 
-# Response size is part of the contract design
+### Response size is part of the contract design
 
 A full `Product` is intentionally rich, so the API bounds the number of those objects that can travel in one response.
 
@@ -6031,7 +6061,7 @@ Gift discovery benefits more from a small set of understandable candidates than 
 
 ---
 
-# The contract is read-only
+### The contract is read-only
 
 All public OpenAPI catalog capabilities are read operations.
 
@@ -6051,7 +6081,7 @@ This is another useful boundary between the product system and the conversation 
 
 ---
 
-# Contract summary
+### Contract summary
 
 The resulting API boundary can be summarized as:
 
@@ -6135,7 +6165,7 @@ The Product Discovery Agent is not expected to infer the complete search state f
 
 ---
 
-## Entry routing
+### Entry routing
 
 A conversation first passes through indigo.ai's platform safety and routing layer.
 
@@ -6185,7 +6215,7 @@ The orchestration therefore treats conversational continuity as part of routing.
 
 ---
 
-# Product Discovery Workflow
+### Product Discovery Workflow
 
 The **Product Discovery Workflow** is responsible for converting the evolving customer conversation into structured discovery state.
 
@@ -6215,7 +6245,7 @@ The distinction prevents every conversational turn from automatically becoming a
 
 ---
 
-## `criteria_map`
+### `criteria_map`
 
 `criteria_map` is the accumulated structured representation of the current discovery request.
 
@@ -6288,7 +6318,7 @@ The earlier information is not discarded merely because it was not repeated.
 
 ---
 
-## Later information can refine earlier information
+### Later information can refine earlier information
 
 The state is conversational rather than immutable.
 
@@ -6320,7 +6350,7 @@ The structured state therefore exists to preserve continuity **without freezing 
 
 ---
 
-# `run_product_search`
+### `run_product_search`
 
 `run_product_search` determines whether the updated turn requires the normal discovery search to execute.
 
@@ -6363,7 +6393,7 @@ and enter the dedicated search workflow.
 
 ---
 
-# Required information before the normal discovery search
+### Required information before the normal discovery search
 
 The indigo.ai discovery policy adds a conversational requirement that does not exist as a backend API limitation.
 
@@ -6389,7 +6419,7 @@ The Catalog Service itself can technically process many searches without those v
 
 ---
 
-## Missing information is asked for, not invented
+### Missing information is asked for, not invented
 
 If both price and delivery are missing, the Product Discovery Agent can ask for both.
 
@@ -6419,7 +6449,7 @@ This is one reason the guard exists in workflow state rather than relying only o
 
 ---
 
-# Find Products by Criteria Workflow
+### Find Products by Criteria Workflow
 
 When `run_product_search = true`, the normal search passes to the **Find Products by Criteria Workflow**.
 
@@ -6449,7 +6479,7 @@ Product Discovery Agent
 
 ---
 
-## Final required-state guard
+### Final required-state guard
 
 The workflow performs its own guard even though the Product Discovery Workflow has already interpreted the conversation.
 
@@ -6490,7 +6520,7 @@ It verifies the required state explicitly.
 
 ---
 
-# Search size and `search_count`
+### Search size and `search_count`
 
 The workflow uses `search_count` to distinguish the first discovery result set from later searches.
 
@@ -6524,7 +6554,7 @@ This gives the first recommendation turn more breadth while keeping later refine
 
 ---
 
-## Why the first result set is larger
+### Why the first result set is larger
 
 At the beginning of discovery, the agent benefits from seeing a broader representation of the valid catalog.
 
@@ -6550,7 +6580,7 @@ while the backend independently enforces the absolute maximum of eight.
 
 ---
 
-# Clearing stale API state
+### Clearing stale API state
 
 Immediately before a new search, the workflow clears:
 
@@ -6577,7 +6607,7 @@ Clearing both values before each call ensures that the post-call state refers to
 
 ---
 
-# `search_count` is marked before the API result is known
+### `search_count` is marked before the API result is known
 
 The workflow then sets:
 
@@ -6603,7 +6633,7 @@ The distinction keeps the state machine simple and avoids adding another success
 
 ---
 
-# The workflow uses the hidden POST transport
+### The workflow uses the hidden POST transport
 
 The API Block calls:
 
@@ -6627,7 +6657,7 @@ The request eventually reaches the same deterministic backend logic as the publi
 
 ---
 
-# API response state
+### API response state
 
 The workflow captures:
 
@@ -6673,7 +6703,7 @@ A real service failure remains a technical condition.
 
 ---
 
-# Success and Error converge on the same agent
+### Success and Error converge on the same agent
 
 Both API branches return control to the:
 
@@ -6705,7 +6735,7 @@ The Product Discovery Agent can therefore decide how to respond depending on whe
 
 ---
 
-# Explicit conversational state
+### Explicit conversational state
 
 The main discovery state currently consists of:
 
@@ -6736,7 +6766,7 @@ The model does not need to reconstruct price, delivery and search execution hist
 
 ---
 
-# Product Discovery Agent
+### Product Discovery Agent
 
 The **Product Discovery Agent** is the customer-facing product reasoning layer.
 
@@ -6762,7 +6792,7 @@ It does **not** own product truth.
 
 ---
 
-# The workflow result is the starting point
+### The workflow result is the starting point
 
 A critical orchestration rule is:
 
@@ -6790,7 +6820,7 @@ which would create:
 
 ---
 
-# Duplicate-search prevention
+### Duplicate-search prevention
 
 The Product Discovery Agent's tool-selection policy explicitly distinguishes:
 
@@ -6819,7 +6849,7 @@ The final architecture keeps direct search capability while removing the assumpt
 
 ---
 
-# Why the agent still has direct discovery access
+### Why the agent still has direct discovery access
 
 Removing `find_products_by_criteria` from the Product Discovery Agent entirely would solve duplicate calls but would remove useful conversational autonomy.
 
@@ -6865,7 +6895,7 @@ This gives the agent flexibility without making the workflow redundant.
 
 ---
 
-# Direct catalog capabilities
+### Direct catalog capabilities
 
 The Product Discovery Agent has access to the five public Catalog Service capabilities:
 
@@ -6881,7 +6911,7 @@ They remain semantically separate.
 
 ---
 
-## `get_categories`
+### `get_categories`
 
 Used when the customer asks what sections the shop contains.
 
@@ -6897,7 +6927,7 @@ It can ask the Catalog Service for the current category map.
 
 ---
 
-## `get_products_by_category`
+### `get_products_by_category`
 
 Used when the customer explicitly wants to browse one section.
 
@@ -6913,7 +6943,7 @@ A category browse must not be presented as satisfying unrelated criteria that we
 
 ---
 
-## `get_product_details`
+### `get_product_details`
 
 Used for one already-identified product.
 
@@ -6923,7 +6953,7 @@ Products returned by normal discovery already arrive complete, so the agent shou
 
 ---
 
-## `get_related_products`
+### `get_related_products`
 
 Used when the customer wants:
 
@@ -6948,7 +6978,7 @@ A concrete complement requires an identified product because the relation needs 
 
 ---
 
-## `find_products_by_criteria`
+### `find_products_by_criteria`
 
 Used directly only when the Product Discovery Agent genuinely needs a **new discovery search** after considering the current state and current `catalog_response`.
 
@@ -6956,7 +6986,7 @@ It remains the broad cross-category search capability, but it is no longer treat
 
 ---
 
-# Product references remain conversational
+### Product references remain conversational
 
 The service returns products in array order, but phrases such as:
 
@@ -6983,7 +7013,7 @@ The conversational layer first resolves what the customer is referring to; only 
 
 ---
 
-# Recommendation reasons are composed by the agent
+### Recommendation reasons are composed by the agent
 
 The Catalog Service does not return prewritten recommendation copy.
 
@@ -7019,7 +7049,7 @@ The backend determines the available facts; the agent determines how to communic
 
 ---
 
-# `excluded` is explanatory, not recommendable
+### `excluded` is explanatory, not recommendable
 
 The Product Discovery Agent must preserve the contract-level distinction between:
 
@@ -7055,7 +7085,7 @@ It must not present it as though it satisfied the customer's criteria.
 
 ---
 
-# `not_applied` constrains what the agent may claim
+### `not_applied` constrains what the agent may claim
 
 Likewise, if the Catalog Service returns:
 
@@ -7080,7 +7110,7 @@ It cannot silently pretend the backend understood more than it did.
 
 ---
 
-# Zero results are not automatically an error
+### Zero results are not automatically an error
 
 A normal response can validly contain:
 
@@ -7112,7 +7142,7 @@ The distinction comes directly from the API contract.
 
 ---
 
-# Post-selection behaviour
+### Post-selection behaviour
 
 Once the main gift need is substantially settled, the Product Discovery Agent can make **one additional commercial move** when it is genuinely useful.
 
@@ -7148,7 +7178,7 @@ The agent is not supposed to turn the conversation into an endless upselling cha
 
 ---
 
-# Complement first
+### Complement first
 
 A complement is preferred when there is a real product relationship.
 
@@ -7172,7 +7202,7 @@ This keeps complement recommendations grounded in the semantic relationship laye
 
 ---
 
-# Fill remaining budget
+### Fill remaining budget
 
 If the main gift is settled and meaningful budget remains, the agent can perform a new discovery search using:
 
@@ -7207,7 +7237,7 @@ The semantic field in the backend constrains what qualifies; the conversational 
 
 ---
 
-# Trade-up
+### Trade-up
 
 A trade-up is another legitimate new search.
 
@@ -7233,7 +7263,7 @@ when the actual difference is significant.
 
 ---
 
-# One move, no repeated pressure
+### One move, no repeated pressure
 
 The post-selection rule is intentionally bounded.
 
@@ -7249,7 +7279,7 @@ This preserves the usefulness of commercial assistance without turning the agent
 
 ---
 
-# Post-selection logic remains probabilistic
+### Post-selection logic remains probabilistic
 
 The Catalog Service supplies deterministic data for:
 
@@ -7275,7 +7305,7 @@ The agent knows the conversational moment.
 
 ---
 
-# Normal search and post-selection search are different intents
+### Normal search and post-selection search are different intents
 
 A useful way to understand the architecture is:
 
@@ -7311,7 +7341,7 @@ That distinction is what makes it possible to give the Product Discovery Agent u
 
 ---
 
-# Agent authority stops at the Catalog Service boundary
+### Agent authority stops at the Catalog Service boundary
 
 The Product Discovery Agent can decide:
 
@@ -7374,7 +7404,7 @@ Neither layer attempts to replace the other.
 
 ---
 
-# Why orchestration is split across workflows and an agent
+### Why orchestration is split across workflows and an agent
 
 A single Product Discovery Agent with all tools could technically perform the whole process.
 
@@ -7413,7 +7443,7 @@ It is **agentic reasoning inside deterministic operational boundaries**.
 
 ---
 
-# End-to-end conversational example
+### End-to-end conversational example
 
 A normal multi-turn conversation can therefore evolve like this:
 
@@ -7498,7 +7528,7 @@ The agent can then invoke the appropriate catalog capability with materially cha
 
 ---
 
-# Orchestration summary
+### Orchestration summary
 
 The final indigo.ai design can be summarized as:
 
@@ -9244,7 +9274,7 @@ Additional runtime files should be added only when a production feature actually
 
 Construction tooling should remain outside the image unless the architecture itself intentionally changes.
 
-## Design principle
+### Design principle
 
 Taken together, these decisions establish a consistent boundary:
 
@@ -9543,7 +9573,7 @@ This does not change product selection or backend truth, but it means the final 
 
 ---
 
-## Scope of these limitations
+### Scope of these limitations
 
 None of these limitations changes the core contract of the current system.
 
