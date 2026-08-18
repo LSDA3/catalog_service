@@ -6794,6 +6794,144 @@ It does **not** own product truth.
 
 ---
 
+### Conversation design and message UX
+
+The conversation is designed to reduce the number of turns without replacing missing customer information with assumptions.
+
+#### Only two blocking inputs
+
+A normal discovery search requires only two things before it can run:
+
+- a price boundary or target;
+- a delivery deadline.
+
+These are the only blocking inputs.
+
+If both are missing, the agent asks for both together. If one is already known, it asks only for the missing one. Once both are available, the agent does not delay a valid search just to complete the rest of the customer profile.
+
+Everything else improves the recommendation but does not prevent discovery from starting.
+
+#### Questions are paired, but never repeated mechanically
+
+When more information is useful, the agent asks for it in pairs so that each customer turn can contribute more than one useful signal:
+
+1. **Budget and timing**
+2. **Situation and job** — when the product would be used and what the customer wants it to do
+3. **Occasion and relationship**
+4. **Recipient and how well the buyer knows them**
+
+The order is deliberate. Situation and function provide stronger information for discovering what kind of gift may be useful, so they remain ahead of occasion, relationship and recipient information.
+
+A pair is not treated as an all-or-nothing form. If one half is already known, only the missing half is asked.
+
+The agent never asks again for information already present in the conversational state.
+
+If the customer cannot answer a non-blocking question, the agent does not force the issue and does not repeat the same wording. It continues with the information available and returns to the missing point later from a different angle, using what has happened in the conversation since — especially the products the customer liked, rejected or compared.
+
+The aim is to recover useful information through context and reaction rather than by repeatedly asking the same abstract question.
+
+The agent also never asks the customer what product type or store category they want. Those are discovery outputs, not prerequisites. If the customer volunteers a concrete object or category, it can be used, but the conversation does not require them to identify one before discovery can begin.
+
+#### Product reactions are part of the narrowing process
+
+The first discovery stage is intentionally broader.
+
+The Catalog Service can return up to **eight** products. The Product Discovery Agent does not independently reorder that result set or select arbitrary products from it. It preserves the Catalog Service order and presents the **first five**.
+
+Those five serve two purposes at the same time:
+
+- they are genuine recommendations;
+- they give the customer concrete alternatives to react to.
+
+At the beginning of gift discovery, asking someone to fully describe an unknown gift can be harder than asking them to react to actual possibilities. Five sufficiently different concrete options give the customer enough material to say things such as:
+
+> “The second one is closer.”
+
+> “I like that idea, but something cheaper.”
+
+> “None of those — something more practical.”
+
+Those reactions become new conversational information and help narrow what the customer actually wants.
+
+A reaction does not automatically dictate which API operation should run next. It changes what is known, and the orchestration or agent then determines what the next turn actually requires.
+
+#### Fewer products as the conversation becomes more precise
+
+Once the conversation has narrowed, the presentation becomes deliberately smaller.
+
+Later discovery searches return up to **five** candidates, and the agent presents only the **first two or three**, again preserving the order returned by the Catalog Service.
+
+The progression is therefore:
+
+```text
+early discovery
+up to 8 returned
+        ↓
+first 5 shown
+        ↓
+customer reacts
+        ↓
+criteria become more precise
+        ↓
+later discovery
+up to 5 returned
+        ↓
+first 2–3 shown
+```
+
+This is deliberate progressive narrowing.
+
+At the start, more options help the customer participate in discovering the direction of the gift. Once that direction is clearer, showing another five products would create unnecessary choice rather than useful information.
+
+The interface therefore reduces the number of visible options as the conversation gains specificity.
+
+#### Every recommendation explains why it is there
+
+The agent never presents a bare list of product names.
+
+Every displayed product carries a short reason written specifically for that product and that customer. The reason is built only from:
+
+- the actual product data returned by the Catalog Service;
+- what the customer has said.
+
+During the first broader presentation, each of the five products receives a concise **micro-reason**. Its purpose is to expose the useful difference between the options quickly enough for the customer to react.
+
+Once the conversation is narrower, the reason can focus more precisely on why each of the two or three remaining options fits the customer's stated need.
+
+The agent does not invent features or explain recommendations through internal criteria, field names, precedence levels or scores.
+
+The Catalog Service determines the ordered product set. The Product Discovery Agent explains why those products make sense for this customer.
+
+#### Questions are written for the customer, not for the schema
+
+When a question corresponds internally to controlled concepts, the customer is never expected to know that vocabulary.
+
+The agent includes recognisable examples directly in the question.
+
+For example, instead of asking the customer for a `use_case` or `functional_family`, it asks when the recipient might use the gift and what the customer would like the object to do.
+
+The internal representation can therefore remain structured and precise while the customer interaction remains natural.
+
+#### One commercial move, then stop
+
+After the main gift has converged on one product, the agent makes exactly one additional commercial move before closing the gift-discovery flow.
+
+The possibilities are evaluated in this order:
+
+1. **Complement** — if a real pairing exists, offer one or two products that genuinely complement the chosen gift.
+2. **Fill the budget** — if no complement applies and there is clearly usable budget remaining, search for a small standalone additional gift within that remainder.
+3. **Trade up** — if neither applies, check whether spending more would produce a meaningfully better option.
+
+Only the first applicable move is performed.
+
+A trade-up never silently breaks the customer's price limit. If the alternative exceeds it, both the original limit and the higher price are made explicit together with the concrete improvement being offered.
+
+The agent does not chain several upselling tactics and does not continue pushing after that one move unless the customer explicitly asks for more options or details.
+
+This keeps the commercial behaviour useful and bounded rather than turning the conversation into repeated sales pressure.
+
+---
+
 ### The workflow result is the starting point
 
 A critical orchestration rule is:
