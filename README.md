@@ -15,6 +15,7 @@ The service is containerized with Docker, deployed on Fly.io and exposed through
 
 **Live service**
 
+- Live demo: `https://lsda3.github.io/catalog_service/`
 - API: `https://indigo-catalog-service.fly.dev`
 - OpenAPI: `https://indigo-catalog-service.fly.dev/openapi.json`
 - Swagger UI: `https://indigo-catalog-service.fly.dev/docs`
@@ -7608,8 +7609,6 @@ catalog_service/
 ├── Dockerfile
 ├── fly.toml
 ├── requirements.txt
-├── bloque-A-datos.md
-├── plan-de-construccion.md
 └── README.md
 ```
 
@@ -7626,8 +7625,6 @@ The directories have deliberately different responsibilities.
 | `Dockerfile` | Production runtime image |
 | `fly.toml` | Fly.io application configuration |
 | `requirements.txt` | Python dependencies |
-| `bloque-A-datos.md` | Detailed design decisions and data-system specification |
-| `plan-de-construccion.md` | Construction plan and work-order history |
 
 The production container deliberately copies only `src/` and `data/`. Construction prompts, scripts and tests remain outside the deployed image.
 
