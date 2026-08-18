@@ -735,7 +735,7 @@ is not meaningful as an isolated query, but is meaningful inside an active disco
 
 ---
 
-### Product Discovery Workflow
+### Product Discovery Workflow in the architecture
 
 The Product Discovery Workflow owns the structured evolution of the discovery request.
 
@@ -769,7 +769,7 @@ from:
 
 ---
 
-### Find Products by Criteria Workflow
+### Find Products by Criteria Workflow in the architecture
 
 This workflow is the normal search path for conversational discovery.
 
@@ -802,7 +802,7 @@ Both API Success and API Error return control to the **Product Discovery Agent**
 
 ---
 
-### Explicit conversational state
+### Explicit conversational state in the architecture
 
 The orchestration does not rely exclusively on the LLM remembering previous prose.
 
@@ -838,7 +838,7 @@ without treating each message as an unrelated search.
 
 ---
 
-### Product Discovery Agent
+### Product Discovery Agent in the architecture
 
 The Product Discovery Agent is the customer-facing reasoning layer for products.
 
@@ -3559,7 +3559,7 @@ alternative_to
 
 ---
 
-### `pairs_with`
+### `pairs_with` in related-product selection
 
 A complement search requires a concrete `product_id`.
 
@@ -3589,7 +3589,7 @@ Everything else, including `in_stock`, continues to apply.
 
 ---
 
-### `alternative_to`
+### `alternative_to` in related-product selection
 
 Alternative search is broader.
 
@@ -3686,7 +3686,7 @@ The same field participates differently because the operation itself has differe
 
 ---
 
-### `relation_type`
+### `relation_type` in related-product selection
 
 For `alternative_to`, each returned `RelatedProduct` can declare the nature of the relation.
 
@@ -4248,7 +4248,7 @@ not_applied
 
 ---
 
-### Response
+### Discovery response
 
 A successful discovery response has the form:
 
@@ -4462,7 +4462,7 @@ It can also receive the shared semantic and purchase criteria needed to constrai
 
 ---
 
-### `pairs_with`
+### `pairs_with` capability
 
 `pairs_with` means:
 
@@ -4499,7 +4499,7 @@ limit
 
 ---
 
-### `alternative_to`
+### `alternative_to` capability
 
 `alternative_to` means:
 
@@ -4581,7 +4581,7 @@ They do not define the relation itself.
 
 ---
 
-### Response
+### Related-products response
 
 The related-products response can contain:
 
@@ -4604,7 +4604,7 @@ where applicable.
 
 ---
 
-### `relation_type`
+### `relation_type` in related-products response
 
 For an `alternative_to` result:
 
@@ -6738,16 +6738,17 @@ The Product Discovery Agent can therefore decide how to respond depending on whe
 
 ### Explicit conversational state
 
-The main discovery state currently consists of:
+The persisted discovery state currently consists of:
 
 | Variable | Role |
 |---|---|
 | `criteria_map` | Accumulated structured product criteria |
-| `run_product_search` | Whether the current turn requires a normal discovery search |
 | `search_count` | Whether an initial discovery search has already been launched |
 | `limit` | Number of products requested in the current workflow search |
 | `catalog_response` | Current Catalog Service response available to the Product Discovery Agent |
 | `technical_error` | Current technical API failure state |
+
+`run_product_search` is a transient output of the state-update step used to select the route for the current turn. It is not part of the persisted session state.
 
 This state exists alongside the natural-language conversation.
 
@@ -6912,7 +6913,7 @@ They remain semantically separate.
 
 ---
 
-### `get_categories`
+### Agent use of `get_categories`
 
 Used when the customer asks what sections the shop contains.
 
@@ -6928,7 +6929,7 @@ It can ask the Catalog Service for the current category map.
 
 ---
 
-### `get_products_by_category`
+### Agent use of `get_products_by_category`
 
 Used when the customer explicitly wants to browse one section.
 
@@ -6944,7 +6945,7 @@ A category browse must not be presented as satisfying unrelated criteria that we
 
 ---
 
-### `get_product_details`
+### Agent use of `get_product_details`
 
 Used for one already-identified product.
 
@@ -6954,7 +6955,7 @@ Products returned by normal discovery already arrive complete, so the agent shou
 
 ---
 
-### `get_related_products`
+### Agent use of `get_related_products`
 
 Used when the customer wants:
 
@@ -6979,7 +6980,7 @@ A concrete complement requires an identified product because the relation needs 
 
 ---
 
-### `find_products_by_criteria`
+### Agent use of `find_products_by_criteria`
 
 Used directly only when the Product Discovery Agent genuinely needs a **new discovery search** after considering the current state and current `catalog_response`.
 
