@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Indishop · Gifts that get it right</title>
+<meta name="description" content="Indishop — a gift shop. Tell us who it's for and we'll help you choose.">
+
+<style>
+  :root {
+    --bg:        #FBF8F4;
+    --surface:   #FFFFFF;
+    --ink:       #1F1B18;
+    --ink-soft:  #6B615A;
+    --line:      #E7DFD6;
+    --accent:    #A8503C;
+    --accent-dk: #8A3F2E;
+    --maxw:      1080px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:       #17140F;
+      --surface:  #201C17;
+      --ink:      #F3EDE6;
+      --ink-soft: #A79C92;
+      --line:     #322B24;
+      --accent:   #D98368;
+      --accent-dk:#E59B82;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI",
+                 Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 17px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
+
+  /* ── Header ─────────────────────────────────────────────────────────── */
+
+  header {
+    border-bottom: 1px solid var(--line);
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter: saturate(1.4) blur(8px);
+    position: sticky; top: 0; z-index: 10;
+  }
+
+  .bar {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 20px; padding: 18px 0;
+  }
+
+  .wordmark {
+    display: inline-flex; align-items: baseline; gap: 2px;
+    font-size: 22px; font-weight: 620; letter-spacing: -0.02em;
+    color: var(--ink); text-decoration: none;
+  }
+  .wordmark .dot { color: var(--accent); }
+
+  .bar nav { display: flex; gap: 22px; font-size: 15px; color: var(--ink-soft); }
+  .bar nav a { color: inherit; text-decoration: none; }
+  .bar nav a:hover { color: var(--ink); }
+
+  @media (max-width: 640px) { .bar nav { display: none; } }
+
+  /* ── Hero ───────────────────────────────────────────────────────────── */
+
+  .hero { padding: 84px 0 64px; text-align: center; }
+
+  .hero h1 {
+    margin: 0 0 18px;
+    font-size: clamp(34px, 6vw, 54px);
+    line-height: 1.1; letter-spacing: -0.03em; font-weight: 640;
+  }
+
+  .hero p {
+    margin: 0 auto 34px; max-width: 30rem;
+    font-size: clamp(17px, 2.2vw, 20px); color: var(--ink-soft);
+  }
+
+  .cta {
+    appearance: none; border: 0; cursor: pointer;
+    font: inherit; font-weight: 560; font-size: 17px;
+    background: var(--accent); color: #fff;
+    padding: 15px 30px; border-radius: 999px;
+    transition: background .15s ease, transform .15s ease, opacity .15s ease;
+  }
+  .cta:hover:not([disabled]) { background: var(--accent-dk); transform: translateY(-1px); }
+  .cta[disabled] { opacity: .45; cursor: default; }
+
+
+  /* ── Categories ─────────────────────────────────────────────────────── */
+
+  section.categories { padding: 12px 0 96px; }
+
+  .eyebrow {
+    text-align: center; margin: 0 0 22px;
+    font-size: 13px; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--ink-soft);
+  }
+
+  .chips {
+    display: flex; flex-wrap: wrap; gap: 10px; justify-content: center;
+    max-width: 780px; margin: 0 auto;
+  }
+
+  .chip {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 999px; padding: 9px 18px;
+    font-size: 15px; color: var(--ink); white-space: nowrap;
+  }
+
+  /* ── Footer ─────────────────────────────────────────────────────────── */
+
+  footer {
+    border-top: 1px solid var(--line);
+    padding: 26px 0 40px; font-size: 14px; color: var(--ink-soft);
+  }
+  .foot { display: flex; flex-wrap: wrap; gap: 14px; justify-content: space-between; }
+</style>
+</head>
+
+<body>
+
+<header>
+  <div class="wrap bar">
+    <a class="wordmark" href="#">Indishop<span class="dot">.</span></a>
+    <nav>
+      <a href="#categories">Categories</a>
+      <a href="#" data-open-chat>Help me choose</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+  <section class="wrap hero">
+    <h1>Gifts that get it right</h1>
+    <p>Tell us who it's for, what you'd like to spend and when you need it. We'll take it from there.</p>
+    <button class="cta" id="open-chat" data-open-chat>Help me choose a gift</button>
+  </section>
+
+  <section class="wrap categories" id="categories">
+    <p class="eyebrow">Our sections</p>
+    <div class="chips">
+      <span class="chip">Home &amp; Living</span>
+      <span class="chip">Kitchen &amp; Dining</span>
+      <span class="chip">Beauty &amp; Wellness</span>
+      <span class="chip">Tech &amp; Gadgets</span>
+      <span class="chip">Books &amp; Stationery</span>
+      <span class="chip">Games &amp; Puzzles</span>
+      <span class="chip">Outdoor &amp; Travel</span>
+      <span class="chip">Jewellery</span>
+      <span class="chip">Kids</span>
+      <span class="chip">Pets</span>
+      <span class="chip">Experiences</span>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <span>Indishop · demo store</span>
+    <span>Product discovery assistant</span>
+  </div>
+</footer>
+
+
+<!-- ══════════════════════════════════════════════════════════════════════
+     INDIGO.AI WIDGET
+
+     Verbatim, exactly as given by "Web Chat Installation", and in the
+     place it specifies: right before </body>. This line is untouched.
+     ══════════════════════════════════════════════════════════════════ -->
+
+<script defer src="https://platform.indigo.ai/widget.js?token=0dc06a75-8147-4148-896a-30b0c6b3212c&v=3&trigger=off"></script>
+
+
+<!-- ══════════════════════════════════════════════════════════════════════
+     PAGE HOOKS INTO THE WIDGET
+
+     The site's own controls are always interactive. Clicking either one
+     opens the indigo.ai Web Chat through its public IndigoAIChat API.
+     ══════════════════════════════════════════════════════════════════ -->
+
+<script>
+(function () {
+  'use strict';
+
+  function openChat(event) {
+    event.preventDefault();
+
+    if (
+      window.IndigoAIChat &&
+      typeof window.IndigoAIChat.setOpen === 'function'
+    ) {
+      window.IndigoAIChat.setOpen(true);
+    }
+  }
+
+  document.querySelectorAll('[data-open-chat]').forEach(function (el) {
+    el.addEventListener('click', openChat);
+  });
+
+  /* setVariables is deliberately not called. The website does not need to
+     inject additional conversation state, and indigo.ai manages the widget
+     session itself. */
+})();
+</script>
+
+</body>
+</html>
