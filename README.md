@@ -9274,3 +9274,300 @@ nor:
 It deliberately places probabilistic reasoning **before and after** the authoritative catalog boundary, while keeping the boundary itself deterministic.
 
 That is the main architectural decision behind the project.
+
+---
+
+## Performance and scalability
+
+The current architecture is optimized for the actual size and interaction pattern of the project rather than for hypothetical large-scale catalog infrastructure.
+
+The runtime catalog contains **150 canonical products**. They are loaded once when the process starts and remain in memory for the lifetime of that process.
+
+A normal request therefore does not require:
+
+```text
+CSV reload
+database query
+vector search
+embedding generation
+semantic reconstruction
+LLM call
+```
+
+The request operates directly over already-built Python objects.
+
+### Runtime cost
+
+`InMemoryCatalog` maintains a dictionary for canonical and absorbed product identifiers, so direct product lookup does not require scanning the catalog.
+
+Discovery operations are deliberately simpler.
+
+The current selection implementation:
+
+```text
+candidate products
+        ↓
+filter applicable boundaries
+        ↓
+order surviving candidates by precedence
+        ↓
+apply response limit
+```
+
+Filtering walks the candidate set, while precedence ordering sorts the products that remain. Related-product search follows the same mechanics inside its relationship levels.
+
+For the current catalog size, introducing a database, search cluster or vector index would add infrastructure without solving a demonstrated runtime bottleneck.
+
+### Response size is bounded
+
+The API limits the amount of merchandise returned in one call:
+
+```text
+discovery / category browse   maximum 8
+related products              maximum 5
+product details               1
+```
+
+This bounds both HTTP payload size and the amount of catalog context passed into the conversational model.
+
+The system therefore scales the conversation by returning a small number of complete products rather than large result sets that then require additional detail requests.
+
+### Current deployment scale
+
+The production service currently runs with:
+
+```text
+1 Fly Machine
+shared-cpu-1x
+512 MB RAM
+1 Uvicorn process
+```
+
+and keeps at least one Machine running to avoid a customer-facing cold start.
+
+The deployment workflow explicitly uses:
+
+```text
+--ha=false
+```
+
+so the current production topology is intentionally not a high-availability deployment.
+
+### What would change with a much larger catalog
+
+The repository boundary already separates the rest of the service from the current storage implementation through `CatalogRepository`.
+
+The current implementation is `InMemoryCatalog`; another storage mechanism could replace it without requiring the public API contract to be redesigned.
+
+If the catalog grew enough that repeatedly walking the complete product set became material, candidate retrieval could move to an indexed persistent store while preserving the important semantics already implemented in the service:
+
+```text
+exact object identity
+hard boundaries
+precedence hierarchy
+relationship levels
+excluded
+not_applied
+```
+
+The goal would not be to replace deterministic selection with generic search relevance. It would be to reduce the candidate set before applying the same decision semantics.
+
+Horizontal scaling would also require reconsidering the current rate limiter because its counters exist in process memory and are therefore independent per container.
+
+### No artificial benchmark claims
+
+The project does not currently include a formal load test or publish latency, requests-per-second or concurrency benchmarks.
+
+For that reason, this README does not claim numerical performance figures that have not been measured.
+
+What can be stated from the implementation is narrower:
+
+> **The current request path is local, deterministic and memory-resident, with no external data or model dependency after the request reaches the Catalog Service.**
+
+---
+
+## Known limitations
+
+The current implementation deliberately optimizes for a small catalog and a conversational product-discovery use case. Several boundaries would need to be revisited if either the data scale or production requirements changed substantially.
+
+### Small-catalog runtime design
+
+The current runtime keeps the complete canonical catalog in one process and discovery can walk and sort in-memory product sets.
+
+That is appropriate for 150 products, but it is not intended as the final storage architecture for a catalog containing hundreds of thousands or millions of items.
+
+At that scale, indexed candidate retrieval would become necessary before deterministic selection.
+
+### Single-instance deployment
+
+The production configuration currently uses one Fly Machine and deployment explicitly disables high availability.
+
+This means the project does not currently provide:
+
+```text
+multi-instance redundancy
+automatic application-level failover
+global distributed rate limiting
+```
+
+That is an accepted deployment choice for the present project rather than a property of the API architecture itself.
+
+### Rate limiting is process-local
+
+Catalog and Diagnostics limits are stored in in-process sliding windows:
+
+```text
+catalog       60 / 60 seconds
+diagnostics   10 / 60 seconds
+```
+
+They reset when the process restarts and would be independent on separate Machines.
+
+If the service were horizontally scaled and required a single global quota, the limiter would need shared state.
+
+### Catalog changes are deployment-driven
+
+Runtime state is immutable for the lifetime of the deployed process.
+
+New products, semantic classifications, relationships or source changes become production state through the controlled construction and deployment lifecycle.
+
+There is currently no live inventory synchronization mechanism that modifies `InMemoryCatalog` while the service is running.
+
+That gives the project reproducibility, but it also means catalog freshness is tied to the update/deployment process.
+
+### Semantic validation cannot prove subjective semantic quality
+
+The semantic construction step is model-assisted.
+
+Deterministic validation can prove things such as:
+
+```text
+complete coverage
+valid vocabulary values
+valid references
+valid types
+valid relationship structure
+```
+
+but it cannot mathematically prove that every subjective semantic classification is the best possible interpretation of a product.
+
+The architecture contains that uncertainty by generating semantic data before deployment and making it inspectable and testable, but model-assisted semantic judgement remains probabilistic.
+
+### Controlled language requires maintained vocabularies and aliases
+
+The service deliberately avoids fuzzy runtime guessing.
+
+If a `product_type`, color or material cannot be resolved safely, the service can expose that through `not_applied` rather than guessing.
+
+That improves correctness but means new terminology may require vocabulary or alias maintenance before the backend can interpret it deterministically.
+
+This is an intentional trade-off between:
+
+```text
+higher recall through guessing
+```
+
+and:
+
+```text
+explicitly bounded interpretation
+```
+
+The project chooses the second.
+
+### Category browsing does not apply the full discovery model
+
+`get_products_by_category` is intentionally a browsing operation.
+
+It supports the category universe together with its declared price, delivery, pagination and sorting behaviour. It does not automatically apply every semantic criterion known elsewhere in the conversation.
+
+The Product Discovery Agent therefore must not describe a browsed set as satisfying a criterion that was not actually applied to that browse.
+
+If future requirements turn category browsing into full semantic discovery constrained to a category, that operation would need to be extended deliberately rather than relying on conversational wording to imply the behaviour.
+
+### Conversational behaviour is not fully deterministic
+
+The Catalog Service is deterministic; the Product Discovery Agent is not.
+
+Natural-language behaviour can still vary in areas such as:
+
+- how an approximate `target_price` is described;
+- whether a conversational clarification is phrased consistently;
+- how a recommendation reason is worded;
+- when the agent judges that a genuinely new search purpose has emerged.
+
+For example, the backend correctly treats `target_price` as a ±20% band, but conversational wording can still make an approximate target sound more like a hard ceiling than the underlying service semantics justify.
+
+The structured API constrains what the agent may claim, but it cannot make natural-language generation byte-for-byte deterministic.
+
+### Post-selection fallback remains model-driven
+
+The Product Discovery Agent follows the intended commercial priority:
+
+```text
+complement
+    ↓
+remaining-budget filler
+    ↓
+trade-up
+```
+
+but this is conversational policy rather than a deterministic workflow state machine.
+
+In particular, if a filler search produces no useful result, the current orchestration does not guarantee that the agent will always continue automatically to evaluate a trade-up.
+
+The backend can determine whether products qualify for each operation. The sequence between those operations still depends on agent reasoning.
+
+### `search_count` represents attempted search state
+
+`search_count` is intentionally binary:
+
+```text
+0 = initial discovery search not launched
+1 = initial discovery path already launched
+```
+
+It is set before the API result is known.
+
+A technical failure can therefore consume the initial-search state, causing a later search to use the smaller result limit even though the customer never received the first result set.
+
+This keeps the workflow simple, but a more elaborate orchestration could distinguish attempted searches from successful searches.
+
+### Some presentation behaviour belongs to the indigo.ai platform
+
+The project controls its own agents, workflows and tool descriptions, but not every instruction injected by the surrounding indigo.ai runtime.
+
+Platform-level behaviour can therefore affect customer-facing formatting, citation behaviour or language independently of the Catalog Service result.
+
+This does not change product selection or backend truth, but it means the final wording is not controlled exclusively by this repository.
+
+---
+
+## Scope of these limitations
+
+None of these limitations changes the core contract of the current system.
+
+For its present scope:
+
+```text
+150 canonical products
+one conversational application
+one production Machine
+bounded result sets
+controlled catalog updates
+```
+
+the architecture deliberately favours:
+
+```text
+simplicity
+traceability
+determinism
+inspectability
+```
+
+over premature distributed infrastructure.
+
+The relevant scaling principle is:
+
+> **Change the infrastructure when the scale requires it, while preserving the semantic and deterministic boundaries that make the current system reliable.**
