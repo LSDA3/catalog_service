@@ -16,6 +16,7 @@ The service is containerized with Docker, deployed on Fly.io and exposed through
 **Live service**
 
 - Live demo: `https://lsda3.github.io/catalog_service/`
+- Indigo test page: `https://clair.platform.indigo.ai/chatbot/0dc06a75-8147-4148-896a-30b0c6b3212c`
 - API: `https://indigo-catalog-service.fly.dev`
 - OpenAPI: `https://indigo-catalog-service.fly.dev/openapi.json`
 - Swagger UI: `https://indigo-catalog-service.fly.dev/docs`
