@@ -8532,3 +8532,745 @@ HTTPS Catalog Service
 No semantic enrichment or relationship construction happens during deployment startup.
 
 The deployed process only reconstructs the validated runtime catalog and serves it deterministically.
+
+---
+
+## Key design decisions
+
+The implementation contains several deliberate trade-offs. They are not accidental consequences of the current codebase: they define where uncertainty is allowed, where behaviour must remain deterministic, and which responsibilities belong to each layer.
+
+Each decision below is documented together with its rationale, cost and the conditions under which it would be reasonable to revisit it.
+
+### 1. Keep the raw catalog unchanged
+
+**Decision**
+
+`data/catalog.csv` remains the factual source as received. Duplicate rows, formatting variants and missing values are handled by deterministic normalization rather than by manually cleaning the source file.
+
+**Why**
+
+Changing the input would hide the integration problem the service is supposed to solve.
+
+The application needs to demonstrate that it can absorb real source irregularities while preserving provenance:
+
+```text
+raw source
+    ↓
+deterministic canonicalization
+    ↓
+runtime product truth
+```
+
+This also makes the transformation from 152 source rows to 150 canonical products explicit and reproducible.
+
+**Trade-off**
+
+The application carries more normalization logic than it would if the CSV were manually curated first.
+
+Every source irregularity that matters has to be handled explicitly rather than disappearing through manual editing.
+
+**When to change**
+
+If the upstream commerce system itself starts guaranteeing a stable canonical schema and product identity, some normalization rules could move upstream.
+
+The service should not duplicate guarantees that the authoritative source already provides reliably.
+
+### 2. Use one canonicalization implementation in construction and runtime
+
+**Decision**
+
+`src/normalization.py` is shared between semantic construction, validation and production loading.
+
+There is not one set of cleaning rules for CI and another for the deployed service.
+
+**Why**
+
+Semantic coverage is meaningful only if both environments agree on what the catalog actually is.
+
+The invariant is:
+
+```text
+canonical catalog validated in CI
+            =
+canonical catalog loaded in production
+```
+
+If those interpretations diverged, a semantic artifact could pass validation and still fail to correspond to the products being served.
+
+**Trade-off**
+
+The normalization layer becomes infrastructure shared by several lifecycle stages, so changes to it can have broad consequences.
+
+A seemingly small normalization change may affect:
+
+- canonical identities;
+- semantic coverage;
+- relationships;
+- runtime lookup;
+- selection behaviour.
+
+**When to change**
+
+Only if a different canonical data service becomes the authoritative boundary for both construction and runtime.
+
+The important requirement is not that `normalization.py` must exist forever; it is that there must remain **one canonical interpretation**.
+
+### 3. Perform probabilistic semantic work before deployment, not during customer requests
+
+**Decision**
+
+Semantic enrichment and relationship construction happen in GitHub Actions.
+
+The deployed Catalog Service does not invoke an LLM.
+
+**Why**
+
+LLMs are useful for interpreting product descriptions and assigning semantic concepts, but that output does not need to remain probabilistic at request time.
+
+Build-time construction allows the result to be:
+
+```text
+generated
+    ↓
+persisted
+    ↓
+validated
+    ↓
+tested
+    ↓
+versioned
+    ↓
+deployed
+```
+
+A customer request therefore consumes already-established application data rather than asking a model to reinterpret the catalog while the customer waits.
+
+**Trade-off**
+
+Semantic changes require a construction/deployment cycle.
+
+The runtime cannot spontaneously classify a newly introduced product that has not passed through the semantic pipeline.
+
+That is intentionally less flexible than runtime LLM reasoning.
+
+**When to change**
+
+A runtime semantic system would make sense only if the product domain required information that genuinely could not be prepared ahead of time.
+
+Even then, deterministic catalog facts and hard purchase constraints should remain outside probabilistic model judgement.
+
+### 4. Treat the semantic layer as versioned application data, not as temporary model output
+
+**Decision**
+
+`data/semantic_layer.json` and the relevant controlled vocabulary state are committed and versioned.
+
+The model's output does not disappear when the CI job finishes.
+
+**Why**
+
+The semantic representation affects production behaviour.
+
+Anything capable of changing:
+
+- which products are considered useful for a use case;
+- which products pair together;
+- gift risk;
+- functional interpretation;
+- alternative behaviour;
+
+is effectively part of the application's data model.
+
+Versioning it makes the production state inspectable and diffable.
+
+**Trade-off**
+
+The repository contains derived data in addition to source data.
+
+Changes produced by semantic reconstruction can create relatively large diffs and require careful validation.
+
+**When to change**
+
+If derived catalog state eventually moves into another persistent versioned store, committing the JSON itself may no longer be necessary.
+
+The requirement to preserve provenance and reproducibility should remain.
+
+### 5. Use controlled semantic concepts instead of free-form runtime interpretation
+
+**Decision**
+
+Gift-discovery concepts such as:
+
+```text
+functional_family
+use_case
+gift_risk
+suitable_relationships
+```
+
+use controlled vocabularies.
+
+`product_type` remains deliberately extensible, but still has canonical definitions and aliases.
+
+**Why**
+
+Without a controlled intermediate language, the construction model, backend and conversational model could all interpret the same concept differently.
+
+The vocabulary creates a stable bridge:
+
+```text
+product description
+        ↓
+controlled semantic concept
+        ↓
+deterministic backend behaviour
+        ↓
+OpenAPI contract
+        ↓
+conversational agent
+```
+
+**Trade-off**
+
+A controlled vocabulary requires governance.
+
+New concepts cannot simply appear as arbitrary model text, and changing an existing definition can require semantic reconstruction.
+
+**When to change**
+
+The vocabulary should evolve when the current concepts stop being sufficient to express real customer intentions or product functions.
+
+It should not grow merely because another synonym appeared in natural language; aliases should absorb wording variation wherever the underlying concept remains the same.
+
+### 6. Separate exact object identity from broader semantic discovery
+
+**Decision**
+
+An explicitly identified `product_type` restricts the candidate universe before normal discovery ranking.
+
+A related but different object is not treated as a weaker match for the requested object.
+
+**Why**
+
+These two customer requests are different:
+
+```text
+"I want a chef's knife."
+```
+
+and:
+
+```text
+"I want something useful for cooking."
+```
+
+The first identifies the object.
+
+The second identifies the intended use.
+
+Collapsing both into similarity ranking could allow an adjacent object to outrank or substitute for the object the customer explicitly requested.
+
+**Trade-off**
+
+Exact searches can legitimately produce no valid result even when semantically related products exist.
+
+The conversational layer must then decide whether to offer alternatives rather than silently broadening the original search.
+
+**When to change**
+
+This distinction should only be relaxed in domains where product-type boundaries themselves are not meaningful to the customer.
+
+For physical retail objects, explicit object identity should generally remain authoritative.
+
+### 7. Separate hard boundaries from recommendation precedence
+
+**Decision**
+
+The selection system distinguishes:
+
+```text
+must satisfy
+```
+
+from:
+
+```text
+should rank higher
+```
+
+Price limits, delivery deadlines and availability can remove a product.
+
+Use case, functional relevance, occasion, relationship and similar signals primarily affect ordering.
+
+**Why**
+
+Treating every customer signal as a filter makes discovery brittle.
+
+Treating every signal as a preference makes hard requirements unreliable.
+
+The service therefore asks two separate questions:
+
+```text
+Is the product valid?
+        ↓
+Where should the valid product appear?
+```
+
+**Trade-off**
+
+The selection model is more explicit than a single generic relevance function.
+
+Every criterion has to be assigned a clear semantic role rather than simply given a weight.
+
+**When to change**
+
+A criterion should move from precedence to a boundary only when failing it genuinely makes the product unusable for that request.
+
+A boundary should become precedence when customers normally regard it as preference rather than eligibility.
+
+### 8. Use lexicographic precedence instead of a weighted score
+
+**Decision**
+
+Valid products are ordered through eight precedence levels rather than by adding weighted relevance points.
+
+There is no public or internal aggregate recommendation percentage.
+
+**Why**
+
+A weighted system allows enough strength in a lower-priority signal to compensate for a more important mismatch.
+
+For example:
+
+```text
+excellent rating
++
+many reviews
+```
+
+should not allow a product to overtake another product that better satisfies the customer's actual functional need merely because a numerical formula adds up differently.
+
+Lexicographic precedence preserves the declared hierarchy.
+
+**Trade-off**
+
+The system cannot express subtle compensating relationships through one continuous score.
+
+Changing the relative importance of criteria requires changing precedence semantics rather than adjusting a weight.
+
+**When to change**
+
+A scoring model would become appropriate if the domain eventually required calibrated trade-offs that genuinely should compensate for one another and those trade-offs could be validated empirically.
+
+It should not be introduced merely because numerical ranking looks more sophisticated.
+
+### 9. Preserve meaningful failures structurally
+
+**Decision**
+
+The API distinguishes:
+
+```text
+results
+excluded
+not_applied
+RecoverableError
+TechnicalFailure
+```
+
+instead of collapsing every unsuccessful outcome into either an empty result or an HTTP error.
+
+**Why**
+
+These statements mean different things:
+
+```text
+"We do not have that product."
+
+"We have it, but it is above your budget."
+
+"I could not safely interpret one requested criterion."
+
+"The request is contradictory."
+
+"The backend is unavailable."
+```
+
+A conversational system needs to know which one happened in order to answer truthfully.
+
+For example, preserving a €149 chef's knife in `excluded` for a €50 request prevents the agent from incorrectly saying that the shop does not carry chef's knives.
+
+**Trade-off**
+
+The contract has more response shapes and the consumer needs to understand their meanings.
+
+It is more complex than returning:
+
+```text
+products: []
+```
+
+for every unsuccessful case.
+
+**When to change**
+
+The shapes could be simplified if the consuming application no longer needs to explain these distinctions.
+
+For a conversational system, removing them would generally reduce rather than improve reliability.
+
+### 10. Return complete products but keep result sets small
+
+**Decision**
+
+Discovery responses return the complete public `Product` representation rather than minimal search hits.
+
+The API controls context size primarily through result limits:
+
+```text
+8 maximum for discovery/browse
+5 maximum for related products
+```
+
+**Why**
+
+The Product Discovery Agent needs enough factual and semantic information to explain recommendations.
+
+Returning lightweight hits would create an additional lookup pattern:
+
+```text
+search
+    ↓
+product IDs
+    ↓
+detail request per product
+```
+
+The current design instead allows:
+
+```text
+search
+    ↓
+complete products
+    ↓
+customer-facing explanation
+```
+
+**Trade-off**
+
+Each returned object is larger.
+
+The service therefore cannot sensibly return dozens of products in one call without increasing model context and customer choice overload.
+
+**When to change**
+
+For very large result sets or non-conversational consumers, a separate lightweight browse/search representation could become useful.
+
+The conversational capability should still receive enough product data to avoid unnecessary follow-up calls.
+
+### 11. Use several capabilities instead of one universal catalog endpoint
+
+**Decision**
+
+The Catalog Service exposes separate operations for:
+
+```text
+get_categories
+get_products_by_category
+find_products_by_criteria
+get_related_products
+get_product_details
+```
+
+**Why**
+
+The operation itself communicates intent.
+
+Browsing a category, finding a substitute and searching across the catalog are different tasks even if they eventually return products.
+
+A single endpoint accepting every parameter would force both the backend and the LLM to infer which semantics apply to each call.
+
+Separate capabilities make those boundaries explicit in OpenAPI.
+
+**Trade-off**
+
+The agent has more tools to choose between.
+
+Correct tool descriptions and orchestration therefore become important.
+
+**When to change**
+
+Capabilities should be merged only if their semantics genuinely converge.
+
+They should not be merged merely to reduce the number of HTTP routes.
+
+### 12. Keep the normal discovery search workflow-owned
+
+**Decision**
+
+The normal current-turn search is executed by the **Find Products by Criteria Workflow**, not by leaving every search decision to the Product Discovery Agent.
+
+The Product Discovery Agent can still call discovery directly when a genuinely new purpose emerges.
+
+**Why**
+
+Several actions around a normal discovery search are procedural:
+
+```text
+check required state
+choose 8 or 5 results
+clear stale response state
+mark search_count
+execute API request
+store catalog_response
+```
+
+Those actions do not benefit from probabilistic reasoning.
+
+Making them explicit also prevents duplicate search calls.
+
+**Trade-off**
+
+The architecture contains both workflow orchestration and agent tool access, which is more complex than giving one model every capability and asking it to manage everything.
+
+**When to change**
+
+If the platform eventually provides reliable transactional tool orchestration and explicit state handling directly inside the agent runtime, some workflow mechanics could be simplified.
+
+The principle should remain: deterministic procedural steps should not become probabilistic unless there is a reason.
+
+### 13. Keep conversational state explicit
+
+**Decision**
+
+Important discovery state is stored in variables such as:
+
+```text
+criteria_map
+run_product_search
+search_count
+catalog_response
+technical_error
+```
+
+rather than depending exclusively on conversational history.
+
+**Why**
+
+Conversation history is excellent for natural references and intent.
+
+It is a weak substitute for operational state.
+
+The system should not need to reread a long transcript and probabilistically rediscover on every turn whether:
+
+- a budget exists;
+- delivery is known;
+- a search already ran;
+- the current API response belongs to this turn.
+
+Explicit state makes those facts observable.
+
+**Trade-off**
+
+State must be updated correctly when the customer changes their mind.
+
+The orchestration has to distinguish preserving known information from retaining obsolete information.
+
+**When to change**
+
+Individual state variables can disappear if the orchestration platform provides an equivalent reliable state abstraction.
+
+The important decision is to preserve explicit operational state rather than reverting to model memory alone.
+
+### 14. Give the agent bounded autonomy after the workflow result
+
+**Decision**
+
+The Product Discovery Agent starts from `catalog_response` when the workflow has already searched, but retains direct catalog capabilities for genuinely new conversational needs.
+
+**Why**
+
+Two extremes were undesirable.
+
+Removing direct search entirely would make the agent unable to respond flexibly to things such as:
+
+- filling remaining budget;
+- exploring a trade-up;
+- finding a complement;
+- reacting to materially changed criteria.
+
+Allowing unrestricted repeated tool use caused duplicate searches.
+
+The final rule is therefore:
+
+```text
+same purpose + same effective criteria
+        ↓
+do not search again
+
+new purpose or materially changed criteria
+        ↓
+a new capability call may be appropriate
+```
+
+**Trade-off**
+
+The distinction between “same search” and “new purpose” still requires agent judgement.
+
+It is not a fully deterministic state machine.
+
+**When to change**
+
+If future orchestration can identify equivalent requests deterministically across every tool call, more duplicate protection could move out of the prompt and into workflow state.
+
+### 15. Keep post-selection commercial behaviour conversational
+
+**Decision**
+
+Complement, filler and trade-up behaviour belongs to the Product Discovery Agent rather than being automatically appended by the Catalog Service.
+
+The intended priority is:
+
+```text
+complement
+    ↓
+fill remaining budget
+    ↓
+trade-up
+```
+
+with one useful move and no repeated pressure.
+
+**Why**
+
+The backend can determine:
+
+- whether a complement exists;
+- whether something qualifies as a filler;
+- what alternatives exist;
+- what they cost.
+
+It cannot determine from product data alone whether the conversational moment is appropriate for another offer.
+
+That judgement belongs to the customer-facing layer.
+
+**Trade-off**
+
+Post-selection behaviour remains partly probabilistic.
+
+The same deterministic catalog state does not guarantee that every conversation will produce exactly the same commercial sentence.
+
+**When to change**
+
+A deterministic commercial workflow would make sense if the business later requires strict campaign rules or auditable sales policies.
+
+The product-selection facts themselves should still come from the Catalog Service.
+
+### 16. Separate runtime, construction and deployment credentials
+
+**Decision**
+
+The system does not use one shared secret across all environments.
+
+The current separation is:
+
+```text
+GitHub construction
+ANTHROPIC_API_KEY
+
+GitHub deployment
+FLY_API_TOKEN
+
+Fly runtime
+CATALOG_API_KEY
+DIAGNOSTICS_API_KEY
+```
+
+**Why**
+
+Each credential grants a different authority.
+
+The runtime service should not need the ability to invoke the construction model or deploy infrastructure.
+
+Likewise, the conversational Catalog credential should not grant access to operator diagnostics.
+
+**Trade-off**
+
+There are more credentials to configure and rotate.
+
+Deployment setup is slightly more involved than using one general-purpose secret.
+
+**When to change**
+
+Credentials may be replaced by stronger identity-based mechanisms if the infrastructure supports them.
+
+The separation of privileges should remain even if the authentication mechanism changes.
+
+### 17. Deploy only what runtime needs
+
+**Decision**
+
+The production image contains:
+
+```text
+src/
+data/
+```
+
+but not:
+
+```text
+prompts/
+scripts/
+tests/
+```
+
+and does not carry the construction-time model dependency.
+
+**Why**
+
+The runtime should be technically incapable of performing semantic reconstruction through the normal deployed image.
+
+This makes the construction/runtime boundary a property of the artifact itself rather than merely a statement in documentation.
+
+**Trade-off**
+
+Production containers cannot be used as general debugging or construction environments.
+
+Operational inspection must use the runtime surfaces intended for that purpose.
+
+**When to change**
+
+Additional runtime files should be added only when a production feature actually requires them.
+
+Construction tooling should remain outside the image unless the architecture itself intentionally changes.
+
+## Design principle
+
+Taken together, these decisions establish a consistent boundary:
+
+```text
+Use probabilistic reasoning
+where interpretation is valuable
+        ↓
+persist and validate its output
+        ↓
+use deterministic logic
+where product truth and constraints matter
+        ↓
+return structured facts
+        ↓
+use probabilistic reasoning again
+where natural conversation is valuable
+```
+
+The system is therefore neither:
+
+> an LLM wrapped around a CSV
+
+nor:
+
+> a fully deterministic chatbot.
+
+It deliberately places probabilistic reasoning **before and after** the authoritative catalog boundary, while keeping the boundary itself deterministic.
+
+That is the main architectural decision behind the project.
