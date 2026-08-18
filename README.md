@@ -296,7 +296,7 @@ A dedicated discovery workflow maintains the accumulated search criteria. When t
 
 The Product Discovery Agent then starts from that service response rather than recreating the same catalog search independently.
 
-The agent still has direct access to discovery capabilities when the conversation genuinely creates a new need inside its own reasoning — for example, looking for a complement, filling remaining budget, finding a related product or exploring a higher-priced alternative.
+The agent still has direct access to discovery capabilities when the conversation genuinely creates a new need inside its own reasoning — for example, looking for a complement, offering a small stocking filler, finding a related product or exploring a higher-priced alternative.
 
 This keeps tool use flexible without allowing the LLM to replace the deterministic search path.
 
@@ -853,7 +853,7 @@ The normal current-turn discovery search belongs to the workflow, but the agent 
 
 Examples include:
 
-- finding an additional small gift to use remaining budget;
+- finding a small additional gift through `stocking_filler`;
 - checking a higher-priced trade-up;
 - responding to a customer who explicitly asks to explore a materially different alternative.
 
@@ -1855,7 +1855,7 @@ Each product entry contains **nine derived fields**:
 | `gift_risk` | How much knowledge of the recipient is needed to choose it confidently |
 | `suitable_relationships` | In which buyer-recipient relationships the gift is suitable |
 | `is_standalone_gift` | Whether it can function as the main gift by itself |
-| `stocking_filler` | Whether it can serve as a small standalone addition to use remaining budget |
+| `stocking_filler` | Whether it can serve as a small standalone additional gift |
 | `pairs_with` | Explicit complementary product relationships |
 | `alternative_to` | Explicit substitution relationships |
 
@@ -2130,7 +2130,7 @@ A `pairs_with` search is precisely where a non-standalone complement can become 
 
 ---
 
-### `stocking_filler`: can it usefully fill remaining budget?
+### `stocking_filler`: can it serve as a small additional gift?
 
 `stocking_filler` represents a specific commercial role.
 
@@ -2142,7 +2142,7 @@ It marks a product that is:
 
 Its purpose is not to mark “cheap products” generally.
 
-It supports the post-selection behaviour where a customer has already chosen the main gift but still has meaningful unused budget.
+It supports post-selection behaviour after the customer has already chosen the main gift. The role itself does not require a calculated remaining budget: a stocking filler is an additional gift. If a price boundary is useful for a particular filler search, that boundary can still be applied normally.
 
 The Product Discovery Agent can request:
 
@@ -2150,7 +2150,7 @@ The Product Discovery Agent can request:
 stocking_filler = true
 ```
 
-together with the remaining budget and use the service to look for a small additional gift.
+to constrain discovery to products classified for that role.
 
 Because the field is explicit, this does not require the conversational model to improvise which products “feel small enough” on each request.
 
@@ -2970,17 +2970,13 @@ This supports a specific post-selection search:
 
 ```text
 main gift already settled
-        +
-remaining budget
         ↓
 stocking_filler = true
         ↓
 small additional gift
 ```
 
-The field therefore does not generally mean “prefer cheaper things”.
-
-It turns on a defined selection mechanic.
+The field therefore does not generally mean “prefer cheaper things”, and it does not activate only when a calculated remainder exists. It turns on a defined selection mechanic. Any price criterion supplied in that particular search remains an ordinary selection boundary.
 
 ---
 
@@ -6789,7 +6785,7 @@ Its responsibilities include:
 - preserving the distinction between `results`, `excluded` and `not_applied`;
 - resolving natural references such as “the second one” from conversation context;
 - deciding whether the customer's next request genuinely requires another capability;
-- performing one useful post-selection commercial move when appropriate.
+- performing one post-selection commercial offer once the main gift is settled.
 
 It does **not** own product truth.
 
@@ -6915,21 +6911,23 @@ The internal representation can therefore remain structured and precise while th
 
 #### One commercial move, then stop
 
-After the main gift has converged on one product, the agent makes exactly one additional commercial move before closing the gift-discovery flow.
+After the main gift has converged on one product, the agent makes one customer-facing post-recommendation commercial offer before closing the gift-discovery flow.
 
-The possibilities are evaluated in this order:
+The possibilities are checked in this order:
 
 1. **Complement** — if a real pairing exists, offer one or two products that genuinely complement the chosen gift.
-2. **Fill the budget** — if no complement applies and there is clearly usable budget remaining, search for a small standalone additional gift within that remainder.
-3. **Trade up** — if neither applies, check whether spending more would produce a meaningfully better option.
+2. **Stocking filler** — if no suitable complement exists, look for a small standalone additional gift using `stocking_filler=true`.
+3. **Trade up** — if neither of the previous checks produces a suitable offer, look for a meaningfully better version or alternative at a higher price.
 
-Only the first applicable move is performed.
+A check that produces no suitable product does not consume the move. The agent continues to the next possibility until it can make one real offer, or until all three have genuinely produced nothing useful.
 
-A trade-up never silently breaks the customer's price limit. If the alternative exceeds it, both the original limit and the higher price are made explicit together with the concrete improvement being offered.
+The customer's existing price criterion remains context for how the offer is explained, but it does not decide whether the post-recommendation sequence is attempted. A complement or stocking filler may increase the total spend, and a trade-up may exceed the original price criterion. Any additional or higher price is made explicit; the agent never silently redefines the customer's original price criterion or pretends an additional product fits inside a remaining budget the customer did not define.
 
-The agent does not chain several upselling tactics and does not continue pushing after that one move unless the customer explicitly asks for more options or details.
+Once one actual offer has been made, the agent stops. It does not continue through the remaining commercial tactics and does not insist if the customer declines or ignores the offer unless they explicitly ask for more options or details.
 
-This keeps the commercial behaviour useful and bounded rather than turning the conversation into repeated sales pressure.
+If all three checks produce nothing suitable, the agent closes without inventing an upsell.
+
+This keeps the commercial behaviour intentional and bounded rather than turning the conversation into repeated sales pressure.
 
 ---
 
@@ -7285,7 +7283,7 @@ The distinction comes directly from the API contract.
 
 ### Post-selection behaviour
 
-Once the main gift need is substantially settled, the Product Discovery Agent can make **one additional commercial move** when it is genuinely useful.
+Once the main gift need is substantially settled, the Product Discovery Agent is instructed to make **one additional commercial offer** before closing the gift-discovery conversation.
 
 This behaviour is conversational policy, not deterministic Catalog Service ranking.
 
@@ -7294,26 +7292,26 @@ The intended hierarchy is:
 ```text
 main gift settled
         ↓
-1. meaningful complement?
+1. suitable complement?
         │
-        ├── yes → offer complement
+        ├── yes → offer complement → stop
         │
         └── no
               ↓
-2. meaningful remaining budget?
+2. suitable stocking filler?
         │
-        ├── yes → search filler
+        ├── yes → offer filler → stop
         │
         └── no
               ↓
 3. meaningful trade-up?
         │
-        ├── yes → offer trade-up
+        ├── yes → offer trade-up → stop
         │
-        └── no → stop
+        └── no → close without inventing one
 ```
 
-Only one move should be made.
+A failed check is not the post-selection move. The agent continues to the next possibility. Only a real customer-facing offer consumes the single move.
 
 The agent is not supposed to turn the conversation into an endless upselling chain.
 
@@ -7343,15 +7341,17 @@ This keeps complement recommendations grounded in the semantic relationship laye
 
 ---
 
-### Fill remaining budget
+### Stocking filler
 
-If the main gift is settled and meaningful budget remains, the agent can perform a new discovery search using:
+If no suitable complement exists, the agent can perform a new discovery search using:
 
 ```text
 stocking_filler = true
 ```
 
-together with the usable remaining budget and other constraints that still apply.
+The result is an additional product, not a replacement for the main gift.
+
+The search does not depend on a calculated remaining budget. If the additional product increases the spend beyond the customer's original price criterion, that additional price is presented clearly rather than being treated as though it were already inside an unused remainder.
 
 This is a genuinely new search purpose.
 
@@ -7364,8 +7364,6 @@ original discovery:
 main gift
         ↓
 customer settles on product
-        ↓
-remaining budget calculated
         ↓
 new purpose:
 small additional gift
@@ -7408,7 +7406,7 @@ when the actual difference is significant.
 
 The post-selection rule is intentionally bounded.
 
-After the agent makes one complement, filler or trade-up move:
+Unsuccessful checks are not customer-facing moves. Once the agent makes one actual complement, filler or trade-up offer:
 
 - if the customer accepts it, the conversation continues from that choice;
 - if the customer declines it, the agent stops;
@@ -7430,19 +7428,15 @@ The Catalog Service supplies deterministic data for:
 - prices;
 - boundaries.
 
-But the decision:
-
-> “Is this a useful moment to make one additional offer?”
-
-belongs to the Product Discovery Agent.
-
-That distinction is deliberate.
+The policy that one commercial offer should be attempted after the main gift is settled belongs to the Product Discovery Agent. The agent evaluates the sequence, interprets whether each check produced a suitable customer-facing option and explains any additional or higher spend.
 
 It would be undesirable for the backend to mechanically append an upsell to every product response.
 
 The service knows product facts.
 
-The agent knows the conversational moment.
+The agent owns the conversational commercial move.
+
+Because this sequence is prompt-driven rather than a deterministic workflow state machine, its execution remains probabilistic even though the prompt explicitly instructs the agent to continue after an unsuccessful check.
 
 ---
 
@@ -7655,7 +7649,7 @@ that does not automatically create another broad search.
 
 The Product Discovery Agent can resolve the reference from conversation context.
 
-If the selected product has a meaningful complement, it may make the single permitted post-selection move.
+Once the main gift is settled, the agent begins the single post-recommendation sequence: it checks for a complement, then a stocking filler if no suitable complement exists, then a trade-up if neither earlier check produced an offer. Failed checks do not consume the move; the sequence stops after one real customer-facing offer.
 
 If the customer later says:
 
@@ -9260,7 +9254,7 @@ Two extremes were undesirable.
 
 Removing direct search entirely would make the agent unable to respond flexibly to things such as:
 
-- filling remaining budget;
+- offering a stocking filler;
 - exploring a trade-up;
 - finding a complement;
 - reacting to materially changed criteria.
@@ -9300,12 +9294,12 @@ The intended priority is:
 ```text
 complement
     ↓
-fill remaining budget
+stocking filler
     ↓
 trade-up
 ```
 
-with one useful move and no repeated pressure.
+with one actual customer-facing offer and no repeated pressure. A failed check continues to the next possibility and does not consume that one offer.
 
 **Why**
 
@@ -9316,15 +9310,13 @@ The backend can determine:
 - what alternatives exist;
 - what they cost.
 
-It cannot determine from product data alone whether the conversational moment is appropriate for another offer.
-
-That judgement belongs to the customer-facing layer.
+The sequence, interpretation of those results as a customer-facing commercial offer and explanation of any additional or higher spend belong to the conversational layer.
 
 **Trade-off**
 
 Post-selection behaviour remains partly probabilistic.
 
-The same deterministic catalog state does not guarantee that every conversation will produce exactly the same commercial sentence.
+The same deterministic catalog state does not guarantee that every conversation will produce exactly the same commercial sentence or tool sequence.
 
 **When to change**
 
@@ -9669,21 +9661,19 @@ The structured API constrains what the agent may claim, but it cannot make natur
 
 ### Post-selection fallback remains model-driven
 
-The Product Discovery Agent follows the intended commercial priority:
+The Product Discovery Agent is explicitly instructed to follow:
 
 ```text
 complement
     ↓
-remaining-budget filler
+stocking filler
     ↓
 trade-up
 ```
 
-but this is conversational policy rather than a deterministic workflow state machine.
+and to continue to the next possibility when a check produces no suitable customer-facing offer.
 
-In particular, if a filler search produces no useful result, the current orchestration does not guarantee that the agent will always continue automatically to evaluate a trade-up.
-
-The backend can determine whether products qualify for each operation. The sequence between those operations still depends on agent reasoning.
+This remains conversational policy rather than a deterministic workflow state machine. The backend can determine whether products qualify for each operation, but execution of the sequence still depends on agent reasoning and therefore cannot be guaranteed with the same mechanical certainty as backend selection.
 
 ### `search_count` represents attempted search state
 
@@ -9950,19 +9940,21 @@ Products that are out of stock never appear in ordinary discovery. The one excep
 
 ###### After the recommendation: one move
 
-###### After the recommendation: one move
+Once the main gift is settled — because the customer has chosen one, clearly prefers one, or the recommendation has otherwise converged on one main product — you have to make one post-recommendation commercial offer before closing the gift-discovery conversation.
 
-Once the main gift is settled — because the customer has chosen one, clearly prefers one, or the recommendation has otherwise converged on one main product — you have to make exactly one post-recommendation move before closing the gift-discovery conversation, no more, don't insist after this move unless the client asks for more options/details.
+Evaluate the possibilities below in this order. A check that produces no suitable product does not count as the move: continue to the next possibility. The move is complete only when you actually present one useful post-recommendation offer to the customer. If all three possibilities have been checked and none produces a suitable option, say so and close without inventing one.
 
-Evaluate the moves below in this order and perform the first one that applies. Do not skip this step because the customer already sounds satisfied. Never perform more than one of these moves in the same turn.
+The customer's existing price criterion remains context for how you explain the offer, but it does not decide whether the post-recommendation move is attempted. A complement or stocking filler may increase the total spend, and a trade-up may exceed the original price criterion. When that happens, make the additional or higher price clear. Never silently redefine the customer's original price criterion or pretend an additional product fits inside a remaining budget they did not define.
 
-1. **COMPLEMENT.** First check whether a real pairing exists for the chosen product. If it does, show one or two complementary products that improve or accompany what they already chose without replacing it. This is not a new main selection.
+1. **COMPLEMENT.** First check whether a real pairing exists for the chosen product. If it does, show one or two complementary products that improve or accompany what they already chose without replacing it. This is not a new main selection. If no suitable complement exists, continue to the stocking filler check.
 
-2. **FILL THE BUDGET.** If no real complement applies and there is clearly usable budget left after the chosen product, use `find_products_by_criteria` with `stocking_filler=true` and the remaining budget to look for a small extra that stands on its own as an additional gift. It is not the main gift.
+2. **STOCKING FILLER.** If no suitable complement exists, check for a small additional gift using `find_products_by_criteria` with `stocking_filler=true`. This is an additional product, not a replacement for the main gift. Do not require a calculated remaining budget in order to perform this check. If a suitable stocking filler exists, offer it and make its additional price clear. If none exists, continue to the trade-up check.
 
-3. **TRADE UP.** If neither of the previous moves applies, perform a trade-up check. Use `find_products_by_criteria` when needed and deliberately widen the price boundary to look for a meaningfully better version or alternative to the chosen gift. Only show it if there is a real improvement worth paying more for. Make the higher price explicit and explain what concrete improvement justifies considering it.
+3. **TRADE UP.** If neither of the previous checks produces a suitable offer, perform a trade-up check. Use `find_products_by_criteria` when needed and deliberately widen the price boundary to look for a meaningfully better version or alternative to the chosen gift. Only show it if there is a real improvement worth paying more for. Make the higher price explicit and explain what concrete improvement justifies considering it.
 
 A price limit is never broken quietly to make an upgrade happen. When a trade-up exceeds the customer's stated price limit, always state both the customer's original limit and the higher price of the option before presenting it as an alternative.
+
+Once you have made one actual post-recommendation offer, stop. Do not continue to the next commercial move in the sequence and do not insist if the customer declines or ignores the offer, unless they explicitly ask for more options or details.
 
 After completing that one move, return to the customer's chosen main gift unless they decide to change it.
 ```
